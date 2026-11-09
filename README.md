@@ -10,7 +10,7 @@
 
 ## 下载使用
 
-到 [Releases](../../releases) 下载 `脑电分析软件-*.zip`，解压后双击 `脑电分析软件.exe`。整个文件夹要放在一起。
+到 [Releases](../../releases) 下载 `eeg-analyzer-*-windows-x64.zip`，解压后双击 `脑电分析软件.exe`。整个文件夹要放在一起。
 
 ## 从源码运行
 
