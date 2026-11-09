@@ -1,195 +1,238 @@
-"""主窗口：左侧步骤导航，中间参数页，右侧结果图，底部日志。"""
+"""主窗口：左侧图标导航，按分析流程排列：项目 → 预处理 → ERP / 时频 / 解码 / RSA → 报告。"""
 import os
+from datetime import datetime
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QFont, QTextCursor
-from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QLabel, QMainWindow,
-                               QMessageBox, QPlainTextEdit, QProgressBar, QSplitter,
-                               QStackedWidget, QTreeWidget, QTreeWidgetItem)
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QTextCursor
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
-from ..core import demo
-from . import advanced_pages as ap
-from . import group_pages as gp
-from . import single_pages as sp
-from .common import LOG, FigureTabs, TaskRunner, log
-from .state import State
+from ..core import project as pj
+from ..theme import C, QSS
+from .analysis_pages import DecodePage, ERPPage, RSAPage, TFRPage
+from .common import LOG, TaskRunner, log
+from .preprocess_page import PreprocessPage
+from .project_page import ProjectPage, ask_project_name
+from .report_page import ReportPage
+from .widgets import icon
 
-STYLE = """
-QMainWindow, QWidget { font-family: "Microsoft YaHei UI", "Microsoft YaHei"; font-size: 13px; }
-QTreeWidget { border: none; background: #f4f6f9; padding-top: 6px; }
-QTreeWidget::item { height: 28px; }
-QTreeWidget::item:selected { background: #dbe8ff; color: #1a3d7c; }
-QGroupBox { border: 1px solid #dde2ea; border-radius: 6px; margin-top: 12px; padding: 8px 8px 6px 8px; }
-QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #2b3a4f; font-weight: 600; }
-QPushButton { padding: 5px 12px; border: 1px solid #c7ced9; border-radius: 4px; background: #ffffff; }
-QPushButton:hover { background: #eef3fb; }
-QPushButton:disabled { color: #9aa3ae; }
-QPushButton[primary="true"] { background: #2f6fde; color: white; border-color: #2f6fde; }
-QPushButton[primary="true"]:hover { background: #2a62c4; }
-QPlainTextEdit { font-family: Consolas, "Microsoft YaHei UI"; font-size: 12px; background: #fbfbfc; }
-QTabBar::tab { padding: 5px 10px; }
-"""
+NAV = [("项目", "mdi6.folder-multiple-outline", ProjectPage),
+       ("预处理", "mdi6.tune-variant", PreprocessPage),
+       ("ERP", "mdi6.sine-wave", ERPPage),
+       ("时频", "mdi6.chart-bell-curve-cumulative", TFRPage),
+       ("解码", "mdi6.brain", DecodePage),
+       ("RSA", "mdi6.dots-grid", RSAPage),
+       ("报告", "mdi6.file-chart-outline", ReportPage)]
 
-CHAPTERS = [
-    ("第 1 章 · 单被试分析", [sp.ReadPage, sp.ChannelPage, sp.ViewPage, sp.FilterPage, sp.BadsPage,
-                          sp.ICAPage, sp.EpochPage, sp.ERPPage, sp.TFRPage, sp.ExportPage]),
-    ("第 3 章 · 多被试分析（含第 2 章统计）", [gp.GroupDataPage, gp.GroupERPPage, gp.GroupTFRPage]),
-    ("第 4 章 · 高级分析", [ap.DecDataPage, ap.TbytPage, ap.CTPage, ap.RSAPage, ap.IEMPage]),
-]
+PROJECTS_ROOT = os.path.join(os.path.expanduser("~"), "Documents", "脑电分析项目")
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
-        self.resize(1500, 920)
-        self.state = State()
+        self.resize(1520, 940)
+        self.setStyleSheet(QSS)
+        self.project = None
+        self.reports = []
         self.runner = TaskRunner(self)
         self._windows = []
-
-        self.nav = QTreeWidget()
-        self.nav.setHeaderHidden(True)
-        self.nav.setMinimumWidth(230)
-        self.stack = QStackedWidget()
-        self.stack.setMinimumWidth(400)
-        self.figs = FigureTabs()
-        self.pages = []
-        for ch_title, pages in CHAPTERS:
-            top = QTreeWidgetItem([ch_title])
-            f = QFont()
-            f.setBold(True)
-            top.setFont(0, f)
-            top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
-            self.nav.addTopLevelItem(top)
-            for cls in pages:
-                page = cls(self)
-                idx = self.stack.addWidget(page)
-                self.pages.append(page)
-                it = QTreeWidgetItem([page.title_text])
-                it.setData(0, Qt.UserRole, idx)
-                top.addChild(it)
-        self.nav.expandAll()
-        self.nav.currentItemChanged.connect(self._nav)
-        self.nav.setCurrentItem(self.nav.topLevelItem(0).child(0))
-
-        split = QSplitter()
-        split.addWidget(self.nav)
-        split.addWidget(self.stack)
-        split.addWidget(self.figs)
-        split.setStretchFactor(2, 1)
-        split.setSizes([230, 480, 790])
-        self.setCentralWidget(split)
+        self.settings = QSettings("EEGAnalyzer", "EEGAnalyzer")
 
         self.logw = QPlainTextEdit()
         self.logw.setReadOnly(True)
         self.logw.setMaximumBlockCount(5000)
-        dock = QDockWidget("运行日志", self)
-        dock.setWidget(self.logw)
-        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(Qt.BottomDockWidgetArea, dock)
-        self.resizeDocks([dock], [170], Qt.Vertical)
-        LOG.message.connect(self._append_log)
+        self.logw.setFixedHeight(170)
+        self.logw.setStyleSheet(f"QPlainTextEdit{{background:#191918;border:none;border-top:1px solid {C['line']};"
+                                f"border-radius:0;font-family:Consolas,'Microsoft YaHei UI';font-size:12px;"
+                                f"color:{C['text2']};padding:8px 14px;}}")
+        self.logw.hide()
+        central = QWidget()
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._rail())
+        right = QWidget()
+        right.setObjectName("Main")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        self.stack = QStackedWidget()
+        rl.addWidget(self.stack, 1)
+        rl.addWidget(self.logw)
+        root.addWidget(right, 1)
+        self.setCentralWidget(central)
 
-        self.status = QLabel("未读取数据")
+        self.pages = {}
+        for name, _, cls in NAV:
+            page = cls(self)
+            self.pages[name] = page
+            self.stack.addWidget(page)
+
+        self.status = QLabel("")
+        self.status.setStyleSheet(f"color:{C['text2']};padding-left:8px;")
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
-        self.progress.setMaximumWidth(160)
+        self.progress.setFixedWidth(160)
         self.progress.hide()
         self.statusBar().addWidget(self.status, 1)
         self.statusBar().addPermanentWidget(self.progress)
+        self.statusBar().setSizeGripEnabled(False)
+        LOG.message.connect(self._append_log)
         self.runner.busy_changed.connect(self._busy)
-        self._menus()
-        self.setStyleSheet(STYLE)
-        log(f"{APP_NAME} {__version__} 已启动。左侧按步骤操作；第 1 章可点「打开手册示例数据」体验。")
+        self.goto("项目")
+        log(f"{APP_NAME} {__version__} 已启动")
+        last = self.settings.value("last_project", "")
+        if last and os.path.exists(os.path.join(last, "project.json")):
+            try:
+                self.set_project(pj.Project.load(last), quiet=True)
+                log(f"已打开上次的项目：{last}")
+            except Exception as e:  # noqa: BLE001
+                log(f"上次的项目打不开：{e}")
 
-    # ------------------------------------------------------------ 菜单
-    def _menus(self):
-        m = self.menuBar().addMenu("文件")
-        a = QAction("打开脑电文件…", self)
-        a.triggered.connect(self._open)
-        m.addAction(a)
-        a = QAction("关闭所有结果图", self)
-        a.triggered.connect(self.figs.close_all)
-        m.addAction(a)
-        m.addSeparator()
-        a = QAction("退出", self)
-        a.triggered.connect(self.close)
-        m.addAction(a)
-        m = self.menuBar().addMenu("工具")
-        a = QAction("生成第 3、4 章合成演示数据…", self)
-        a.triggered.connect(self._demo)
-        m.addAction(a)
-        a = QAction("清空日志", self)
-        a.triggered.connect(self.logw.clear)
-        m.addAction(a)
-        m = self.menuBar().addMenu("帮助")
-        a = QAction("关于", self)
-        a.triggered.connect(self._about)
-        m.addAction(a)
+    # ------------------------------------------------------------ 导航
+    def _rail(self):
+        rail = QWidget()
+        rail.setObjectName("Rail")
+        rail.setFixedWidth(84)
+        lay = QVBoxLayout(rail)
+        lay.setContentsMargins(10, 16, 10, 14)
+        lay.setSpacing(6)
+        logo = QLabel()
+        logo.setPixmap(icon("mdi6.head-snowflake-outline", "#5DCAA5").pixmap(34, 34))
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setToolTip(f"{APP_NAME} {__version__}")
+        lay.addWidget(logo)
+        lay.addSpacing(14)
+        self.nav = QButtonGroup(self)
+        self.nav.setExclusive(True)
+        self.nav_btns = {}
+        for i, (name, ic, _) in enumerate(NAV):
+            b = self._rail_btn(name, ic)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, n=name: self.goto(n))
+            self.nav.addButton(b, i)
+            self.nav_btns[name] = b
+            lay.addWidget(b)
+            if name in ("预处理", "RSA"):
+                lay.addSpacing(8)
+        lay.addStretch(1)
+        self.log_btn = self._rail_btn("日志", "mdi6.console-line")
+        self.log_btn.setCheckable(True)
+        self.log_btn.toggled.connect(self.logw.setVisible)
+        lay.addWidget(self.log_btn)
+        return rail
 
-    def _open(self):
-        page = self.pages[0]
-        p, _ = QFileDialog.getOpenFileName(self, "选择脑电文件", os.path.expanduser("~/Desktop"),
-                                           sp.reading.RAW_FILE_FILTER)
+    @staticmethod
+    def _rail_btn(text, ic):
+        b = QToolButton()
+        b.setObjectName("RailBtn")
+        b.setText(text)
+        b.setIcon(icon(ic, "#CECBF6"))
+        b.setIconSize(QSize(22, 22))
+        b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        b.setFixedSize(64, 58)
+        b.setCursor(Qt.PointingHandCursor)
+        return b
+
+    def goto(self, name, subject=None):
+        page = self.pages[name]
+        self.stack.setCurrentWidget(page)
+        self.nav_btns[name].setChecked(True)
+        if subject is not None and hasattr(page, "on_show"):
+            page.on_show(subject=subject)
+        else:
+            page.on_show()
+
+    # ------------------------------------------------------------ 项目
+    def set_project(self, p, quiet=False):
+        self.project = p
+        self.settings.setValue("last_project", p.folder)
+        self.setWindowTitle(f"{p.name} — {APP_NAME} {__version__}")
+        if not quiet:
+            log(f"项目：{p.folder}")
+        self.refresh()
+
+    def refresh(self):
+        self.stack.currentWidget().on_show()
+        p = self.project
         if p:
-            self.goto(0)
-            page.path.setText(os.path.normpath(p))
-            page.load()
+            self.status.setText(f"{p.name}　·　{len(p.done_subjects())}/{len(p.subjects)} 名被试可分析　·　{p.folder}")
 
-    def _demo(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择保存演示数据的文件夹", os.path.expanduser("~/Desktop"))
+    def project_changed(self, msg=""):
+        if self.project:
+            self.project.save()
+        if msg:
+            log(msg)
+            self.statusBar().showMessage(msg, 6000)
+        self.refresh()
+
+    def new_project(self):
+        name = ask_project_name(self, f"项目_{datetime.now():%Y%m%d}")
+        if not name:
+            return None
+        os.makedirs(PROJECTS_ROOT, exist_ok=True)
+        folder = QFileDialog.getExistingDirectory(self, "项目保存在哪个文件夹（会在里面新建一个同名文件夹）",
+                                                  PROJECTS_ROOT)
+        if not folder:
+            return None
+        path = os.path.join(folder, name)
+        if os.path.exists(os.path.join(path, "project.json")):
+            QMessageBox.warning(self, "已存在", f"{path} 已经是一个项目，请换个名字或直接打开它。")
+            return None
+        os.makedirs(path, exist_ok=True)
+        p = pj.Project(path, name)
+        p.save()
+        self.set_project(p)
+        return p
+
+    def ensure_project(self):
+        if self.project is not None:
+            return self.project
+        path = os.path.join(PROJECTS_ROOT, f"项目_{datetime.now():%Y%m%d_%H%M%S}")
+        os.makedirs(path, exist_ok=True)
+        p = pj.Project(path)
+        p.save()
+        self.set_project(p)
+        log(f"还没有项目，已自动新建：{path}")
+        return p
+
+    def open_project(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择项目文件夹（里面有 project.json）",
+                                                  self.project.folder if self.project else PROJECTS_ROOT)
         if not folder:
             return
-        folder = os.path.join(folder, "脑电软件合成演示数据")
-        self.runner.run("生成合成演示数据", lambda: demo.make_all(folder, log=log),
-                        lambda f: QMessageBox.information(
-                            self, "完成", f"已生成到：\n{f}\n\n这是模拟信号，只用于熟悉操作，不是真实数据。"))
+        if not os.path.exists(os.path.join(folder, "project.json")):
+            QMessageBox.warning(self, "不是项目文件夹", "这个文件夹里没有 project.json。")
+            return
+        self.set_project(pj.Project.load(folder))
+        self.goto("项目")
 
-    def _about(self):
-        import mne
-        QMessageBox.about(self, "关于", f"<b>{APP_NAME}</b> {__version__}<br><br>"
-                          "把 EEG Handbook（MNE-Python 教程）的分析流程做成桌面程序：<br>"
-                          "第 1 章单被试预处理与分析，第 3 章多被试 ERP / 时频（含第 2 章统计方法），"
-                          "第 4 章解码、RSA、IEM。<br><br>"
-                          f"MNE-Python {mne.__version__}　NeuroRA　inverted_encoding<br>"
-                          "所有计算都在本机完成，不上传数据。")
+    def save_project(self):
+        if self.project:
+            self.project.save()
+            self.statusBar().showMessage("项目已保存", 4000)
 
-    # ------------------------------------------------------------ 公共接口（页面通过 ctx 调用）
-    def goto(self, idx):
-        n = 0
-        for i in range(self.nav.topLevelItemCount()):
-            top = self.nav.topLevelItem(i)
-            for j in range(top.childCount()):
-                if n == idx:
-                    self.nav.setCurrentItem(top.child(j))
-                    return
-                n += 1
+    def demo_project(self):
+        path = os.path.join(PROJECTS_ROOT, "合成演示项目")
+        if os.path.exists(os.path.join(path, "project.json")):
+            self.set_project(pj.Project.load(path))
+            self.goto("项目")
+            return
+        os.makedirs(path, exist_ok=True)
+        self.runner.run("生成合成演示项目", lambda: pj.make_demo_project(path, log=log),
+                        lambda p: (self.set_project(p), self.goto("项目"),
+                                   QMessageBox.information(
+                                       self, "演示项目", "已生成 10 名被试的合成数据（模拟信号，不是真实数据）。\n\n"
+                                       "包含 First / Repetition 两个条件和 8 类“朝向”标签，"
+                                       "可以直接去 ERP、时频、解码、RSA 页试试。")))
 
-    def data_changed(self):
-        st = self.state
-        parts = []
-        if st.raw is not None:
-            r = st.raw
-            parts.append(f"数据：{os.path.basename(str(st.raw_path))}　{len(r.ch_names)} 通道　"
-                         f"{r.info['sfreq']:g} Hz　{r.times[-1]:.1f} s　坏导 {len(r.info['bads'])}")
-        if st.ica is not None:
-            parts.append(f"ICA {st.ica.n_components_} 成分")
-        if st.epochs is not None:
-            parts.append(f"分段 {len(st.epochs)} 个")
-        if st.power is not None:
-            parts.append(f"时频（{st.tfr_condition}）")
-        if st.group is not None:
-            parts.append(f"组数据 {len(st.group.conditions)} 个条件")
-        if st.dec is not None:
-            parts.append(f"解码数据 {st.dec.data.shape[0]} 被试")
-        self.status.setText("　|　".join(parts) or "未读取数据")
-        cur = self.stack.currentWidget()
-        if cur is not None and cur is not self.pages[0]:
-            cur.on_show()
+    def add_report(self, res):
+        self.reports.append((datetime.now(), res))
 
     def keep_window(self, win, on_close=None):
-        """保存交互式浏览器窗口的引用，关闭时刷新状态（例如在浏览器里标的坏导）。"""
         self._windows.append(win)
         sig = getattr(win, "gotClosed", None)
 
@@ -198,45 +241,36 @@ class MainWindow(QMainWindow):
                 self._windows.remove(win)
             if on_close:
                 on_close()
-            self.data_changed()
         if sig is not None:
             sig.connect(closed)
         elif hasattr(win, "canvas"):
             win.canvas.mpl_connect("close_event", closed)
 
     # ------------------------------------------------------------ 内部
-    def _nav(self, cur, _prev):
-        if cur is None:
-            return
-        idx = cur.data(0, Qt.UserRole)
-        if idx is None:
-            if cur.childCount():
-                self.nav.setCurrentItem(cur.child(0))
-            return
-        self.stack.setCurrentIndex(idx)
-        self.pages[idx].on_show()
-
     def _append_log(self, msg):
         self.logw.appendPlainText(msg)
         self.logw.moveCursor(QTextCursor.End)
+        if msg.startswith(("▶", "✓", "✗", "⚠")) or "：" in msg[:20]:
+            self.status.setText(msg[:160])
 
     def _busy(self, busy, title):
-        self.stack.setEnabled(not busy)
+        self.stack.currentWidget().setEnabled(not busy)
+        for b in self.nav_btns.values():
+            b.setEnabled(not busy)
         self.progress.setVisible(busy)
         if busy:
-            self.statusBar().showMessage(f"正在{title}…")
+            self.status.setText(f"正在{title}…　可以点左下角「日志」看进度")
             QApplication.setOverrideCursor(Qt.BusyCursor)
         else:
-            self.statusBar().clearMessage()
             QApplication.restoreOverrideCursor()
-            self.data_changed()
+            self.refresh()
 
     def closeEvent(self, e):
-        if self.runner.busy:
-            r = QMessageBox.question(self, "还在计算", "还有计算没完成，确定退出吗？")
-            if r != QMessageBox.Yes:
-                e.ignore()
-                return
+        if self.runner.busy and QMessageBox.question(self, "还在计算", "还有计算没完成，确定退出吗？") != QMessageBox.Yes:
+            e.ignore()
+            return
+        if self.project:
+            self.project.save()
         for w in list(self._windows):
             try:
                 w.close()
@@ -244,4 +278,4 @@ class MainWindow(QMainWindow):
                 pass
         e.accept()
         if self.runner.busy:
-            os._exit(0)  # 后台计算线程无法中断，直接结束进程
+            os._exit(0)

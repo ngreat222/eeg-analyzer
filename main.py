@@ -14,7 +14,7 @@ def main():
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QSplashScreen
-    from PySide6.QtGui import QPixmap, QColor
+    from PySide6.QtGui import QColor, QFont, QPixmap
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
@@ -24,10 +24,11 @@ def main():
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
 
-    pm = QPixmap(420, 160)
-    pm.fill(QColor("#2f6fde"))
+    pm = QPixmap(440, 170)
+    pm.fill(QColor("#26215C"))
     splash = QSplashScreen(pm)
-    splash.showMessage("脑电分析软件\n正在加载 MNE-Python …", Qt.AlignCenter, QColor("white"))
+    splash.setFont(QFont("Microsoft YaHei UI", 12))
+    splash.showMessage("脑电分析软件\n正在加载分析引擎 …", Qt.AlignCenter, QColor("#EEEDFE"))
     splash.show()
     app.processEvents()
 

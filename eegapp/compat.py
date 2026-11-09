@@ -13,15 +13,19 @@ def setup():
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    # 中文 Windows 控制台/重定向默认是 GBK，遇到 ⚠ 等字符会报错；统一成 UTF-8 并替换无法编码的字符
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
 
     import matplotlib
 
     # 静态图在后台线程里用 Agg 画，再嵌进 Qt 画布；交互式波形浏览器用 mne-qt-browser
     matplotlib.use("Agg")
-    matplotlib.rcParams["font.sans-serif"] = [
-        "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "DejaVu Sans"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    matplotlib.rcParams["figure.dpi"] = 100
+    from . import theme
+    theme.apply_mpl()
 
     # inverted_encoding 0.2.3 仍调用已从新版 scipy 移除的 scipy.signal.gaussian
     import scipy.signal

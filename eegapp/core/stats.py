@@ -8,15 +8,27 @@ TESTS_1 = ["单样本 t 检验（与 0 比较）", "置换检验（与 0 比较�
            "cluster 置换检验（单侧，> 0）", "cluster 置换检验（双侧）"]
 TESTS_2 = ["配对 t 检验", "独立样本 t 检验", "置换检验（配对）", "cluster 置换检验（配对，双侧）"]
 TESTS_N = ["单因素 F 检验", "重复测量方差分析（两因素）"]
+# 组水平（被试为单位，条件之间配对）与单被试（试次为单位，条件之间独立）各自适用的检验
+GROUP_TESTS = {1: TESTS_1, 2: ["配对 t 检验", "置换检验（配对）", "cluster 置换检验（配对，双侧）"],
+               "n": TESTS_N}
+TRIAL_TESTS = {1: TESTS_1, 2: ["独立样本 t 检验", "置换检验（独立样本）", "cluster 置换检验（独立样本）"],
+               "n": ["单因素 F 检验"]}
+
+
+def tests_for(k, level="group"):
+    table = GROUP_TESTS if level == "group" else TRIAL_TESTS
+    return table.get(k, table["n"]) if k >= 1 else []
 CORRECTIONS = ["不校正", "Bonferroni", "FDR"]
 
 
-def permutation_test(x, y, n_iter=1000, rng=None):
+def permutation_test(x, y, n_iter=1000, rng=None, paired=None):
     """两样本置换检验（双侧，配对时交换符号）。对应手册里 NeuroRA 1.x 的 permutation_test()。"""
     rng = np.random.default_rng(rng)
     x = np.asarray(x, float)
     y = np.asarray(y, float)
-    if x.shape == y.shape:
+    if paired is None:
+        paired = x.shape == y.shape
+    if paired:
         d = x - y
         obs = abs(d.mean())
         signs = rng.choice([-1, 1], size=(n_iter, d.size))
@@ -84,10 +96,25 @@ def run_time_test(conds, test, correction="不校正", alpha=0.05, n_iter=1000,
             stat, p = ttest_rel(a, b, axis=0)
         elif test == "独立样本 t 检验":
             stat, p = ttest_ind(a, b, axis=0)
+        elif test == "置换检验（独立样本）":
+            stat = a.mean(0) - b.mean(0)
+            p = np.array([permutation_test(a[:, t], b[:, t], n_iter, paired=False) for t in range(n_t)])
         elif test.startswith("置换"):
             _check_paired(a, b)
             stat = a.mean(0) - b.mean(0)
-            p = np.array([permutation_test(a[:, t], b[:, t], n_iter) for t in range(n_t)])
+            p = np.array([permutation_test(a[:, t], b[:, t], n_iter, paired=True) for t in range(n_t)])
+        elif test == "cluster 置换检验（独立样本）":
+            from mne.stats import permutation_cluster_test
+            _, clusters, cp, _ = permutation_cluster_test([a, b], n_permutations=n_iter, out_type="mask",
+                                                          verbose=False)
+            mask = np.zeros(n_t)
+            diff = a.mean(0) - b.mean(0)
+            for c, pv in zip(clusters, cp):
+                if pv < cluster_p:
+                    mask[c] = np.sign(diff[c].mean()) or 1
+            out.update(sig=mask, p=None, p_corr=None, stat=None)
+            log(f"{test}：显著时间点 {int(np.sum(mask != 0))} 个")
+            return out
         elif test.startswith("cluster"):
             _check_paired(a, b)
             mask = _cluster_1d(a - b, 2, alpha, cluster_p, n_iter)

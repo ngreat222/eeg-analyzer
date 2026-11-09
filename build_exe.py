@@ -29,7 +29,7 @@ EXCLUDES = [
     "pytest", "sphinx", "docutils", "black", "pylint",
 ]
 
-COLLECT_ALL = ["mne", "mne_qt_browser", "neurora", "inverted_encoding", "pyqtgraph", "edfio",
+COLLECT_ALL = ["mne", "mne_qt_browser", "qtawesome", "neurora", "inverted_encoding", "pyqtgraph", "edfio",
                "eeglabio", "pybv", "h5io", "lazy_loader"]
 HIDDEN = ["sklearn.svm", "sklearn.model_selection", "sklearn.decomposition", "sklearn.preprocessing",
           "sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes", "scipy.io.matlab",

@@ -12,4 +12,6 @@ eeglabio==0.1.4
 pybv==0.8.1
 neurora==2.0.1
 inverted_encoding==0.2.3
+qtawesome==1.4.2
+pandas
 pyinstaller==6.22.3
