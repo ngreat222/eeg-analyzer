@@ -81,7 +81,7 @@ class ERPPage(_AnalysisPage):
         self.test.addItem("不做检验")
         items = stats.tests_for(k, level)
         self.test.addItems(items)
-        if self.test.findText(cur) >= 0:
+        if cur in items:  # 只保留仍然适用的检验；之前没数据时的“不做检验”不算用户选择
             self.test.setCurrentText(cur)
         elif items:
             pref = [x for x in items if x.startswith("cluster")]

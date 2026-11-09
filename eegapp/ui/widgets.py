@@ -228,6 +228,7 @@ class CheckList(QListWidget):
 
     def __init__(self, max_h=150):
         super().__init__()
+        self.max_h = max_h
         self.setMaximumHeight(max_h)
         self.itemChanged.connect(lambda _: self.changed.emit())
 
@@ -243,6 +244,9 @@ class CheckList(QListWidget):
             li.setCheckState(Qt.Checked if on else Qt.Unchecked)
             self.addItem(li)
         self.blockSignals(False)
+        # 高度随条目数变化，条目少时不出现滚动条
+        row = self.sizeHintForRow(0) if self.count() else 28
+        self.setFixedHeight(min(self.max_h, max(row, 28) * max(self.count(), 1) + 2 * self.frameWidth() + 8))
         self.changed.emit()
 
     def checked(self):
@@ -292,6 +296,25 @@ class FigureCard(Card):
         d.exec()
 
 
+def wrap_text(text, width=34):
+    """按显示宽度断行：汉字算 1，英文数字算 0.55；尽量在标点后断开。"""
+    lines, cur, w = [], "", 0.0
+    for ch in text:
+        cur += ch
+        w += 0.55 if ord(ch) < 128 else 1.0
+        if (w >= width - 6 and ch in "，。；、）」") or w >= width:
+            lines.append(cur.strip())
+            cur, w = "", 0.0
+    if cur.strip():
+        lines.append(cur.strip())
+    # 行首不放标点：挪到上一行末尾
+    for i in range(1, len(lines)):
+        while lines[i] and lines[i][0] in "，。；、）」！？":
+            lines[i - 1] += lines[i][0]
+            lines[i] = lines[i][1:]
+    return "\n".join(x for x in lines if x)
+
+
 class EmptyState(QWidget):
     def __init__(self, icon_name, title, body, buttons=()):
         super().__init__()
@@ -304,10 +327,10 @@ class EmptyState(QWidget):
         t = label(title, "H1")
         t.setAlignment(Qt.AlignCenter)
         lay.addWidget(t)
-        b = label(body, "Sub", wrap=True)
+        # 不用 Qt 的自动换行（居中对齐时高度会算少，文字被压扁），提前按字数断好行
+        b = label(wrap_text(body, 34), "Sub")
         b.setAlignment(Qt.AlignCenter)
-        b.setFixedWidth(520)  # 固定宽度，自动换行后的高度才算得对
-        lay.addWidget(b, 0, Qt.AlignHCenter)
+        lay.addWidget(b)
         if buttons:
             lay.addSpacing(10)
             lay.addLayout(hbox("stretch", *buttons, "stretch"))
