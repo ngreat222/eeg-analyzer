@@ -94,7 +94,7 @@ class ProjectPage(BasePage):
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(v)
                 if j == 1:
-                    it.setForeground(QColor(C["mint"] if done else C["amber"]))
+                    it.setForeground(QColor(C["ok"] if done else C["warn"]))
                 self.table.setItem(i, j, it)
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)

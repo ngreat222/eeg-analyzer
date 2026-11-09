@@ -9,7 +9,7 @@ from .widgets import Section, chip, label
 class BasePage(QWidget):
     title = ""
     subtitle = ""
-    side_width = 340
+    side_width = 360
 
     def __init__(self, ctx, with_side=True):
         super().__init__()

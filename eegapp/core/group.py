@@ -7,7 +7,7 @@ from matplotlib.figure import Figure
 
 from .stats import sem
 
-from ..theme import SERIES as COLORS
+from ..theme import C, SERIES as COLORS
 
 
 @dataclass
@@ -133,8 +133,8 @@ def _spines(ax):
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_linewidth(2)
     ax.spines["bottom"].set_linewidth(2)
-    ax.axhline(0, color="#888780", lw=0.8)
-    ax.axvline(0, color="#888780", lw=0.8)
+    ax.axhline(0, color=C["axis"], lw=0.8)
+    ax.axvline(0, color=C["axis"], lw=0.8)
 
 
 def plot_group_erp(times, erps, stat=None, ylim=None, title="", unit="µV", ms=True):
@@ -160,9 +160,9 @@ def plot_group_erp(times, erps, stat=None, ylim=None, title="", unit="µV", ms=T
         else:
             sig = np.asarray(stat["sig"])
             for k in np.where(sig != 0)[0]:
-                ax.axvspan(t[k], t[k] + dt, color="#7F77DD", alpha=0.22, lw=0)
+                ax.axvspan(t[k], t[k] + dt, color=C["sig"], alpha=0.22, lw=0)
             if np.any(sig != 0):
-                ax.plot([], [], color="#7F77DD", lw=6, alpha=0.5, label="显著时间点")
+                ax.plot([], [], color=C["sig"], lw=6, alpha=0.5, label="显著时间点")
     ax.set_ylim(y0, y1)
     _spines(ax)
     ax.set_xlabel("时间 (ms)" if ms else "时间 (s)")
@@ -177,7 +177,7 @@ def plot_tfr_map(tfr_mean, freqs, times, mask=None, clim=None, title="", cbar="d
     ax = fig.subplots()
     t = times * 1000 if ms else times
     clim = clim or (-np.nanmax(np.abs(tfr_mean)), np.nanmax(np.abs(tfr_mean)))
-    im = ax.imshow(tfr_mean, cmap="RdBu_r", origin="lower", aspect="auto",
+    im = ax.imshow(tfr_mean, cmap="mocha_div", origin="lower", aspect="auto",
                    extent=[t[0], t[-1], freqs[0], freqs[-1]], vmin=clim[0], vmax=clim[1])
     if mask is not None and np.any(mask != 0):
         # 与手册相同：四周补一圈 0，再画 ±0.5 等值线勾出显著区域
@@ -190,9 +190,9 @@ def plot_tfr_map(tfr_mean, freqs, times, mask=None, clim=None, title="", cbar="d
         y = np.concatenate(([freqs[0] - df], np.linspace(freqs[0], freqs[-1], nf), [freqs[-1] + df]))
         X, Y = np.meshgrid(x, y)
         if np.any(pad > 0):
-            ax.contour(X, Y, pad, [0.5], colors="#FAC775", linewidths=2, linestyles="dashed")
+            ax.contour(X, Y, pad, [0.5], colors=C["pos"], linewidths=2, linestyles="dashed")
         if np.any(pad < 0):
-            ax.contour(X, Y, pad, [-0.5], colors="#9FE1CB", linewidths=2, linestyles="dashed")
+            ax.contour(X, Y, pad, [-0.5], colors=C["neg"], linewidths=2, linestyles="dashed")
         ax.set_xlim(t[0], t[-1])
         ax.set_ylim(freqs[0], freqs[-1])
     cb = fig.colorbar(im, ax=ax)

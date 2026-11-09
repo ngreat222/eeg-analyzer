@@ -9,6 +9,7 @@ from matplotlib.figure import Figure
 from scipy import stats as sps
 
 from . import advanced, group, stats
+from ..theme import C
 from .single import parse_names
 
 GROUP = "全组"
@@ -260,7 +261,7 @@ def tfr(project, scope, conditions, channels, fmin, fmax, fstep, cycles_div, bas
         res.figures.append(("差异时频图", group.plot_tfr_map(dmean, freqs, tw, m, (-lim, lim),
                                                           f"{conditions[0]} − {conditions[1]}", cbar="ΔdB")))
     if do_stats:
-        res.notes.append("虚线圈出 cluster 置换检验显著的区域：黄色 = 高于基线 / 条件 1 更高，绿色 = 低于。")
+        res.notes.append("虚线圈出 cluster 置换检验显著的区域：黄色 = 高于基线 / 条件 1 更高，青色 = 低于。")
     fb = (freqs >= metric_band[0]) & (freqs <= metric_band[1])
     mwi = _window(tw, metric_win)
     vals = {c: maps[c][:, fb][:, :, mwi].mean(axis=(1, 2)) for c in conditions}
@@ -390,7 +391,7 @@ def rsa(dd, model_kind, model_file, time_win, time_step, distance="correlation",
     res.params = dict(标签=dd.label_name, 模型=model_kind, 距离=distance, 时间窗=time_win, 步长=time_step)
     res.figures.append(("与模型 RDM 的相关", advanced.plot_timecourse(
         r, t, mask, None, ylabel="Spearman r", title=f"{dd.label_name}：脑电 RDM 与模型 RDM 的相关",
-        color="#AFA9EC")))
+        color=C["accent"])))
     k = int(np.argmax(r.mean(0)))
     res.figures.append(("模型 RDM", advanced.plot_rdm(model, dd.class_names, f"模型 RDM：{model_kind}")))
     res.figures.append((f"脑电 RDM（{t[k] * 1000:.0f} ms）",

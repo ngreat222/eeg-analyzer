@@ -19,7 +19,7 @@ MONTAGES = ["自动识别"] + STANDARD_MONTAGES + ["不设置"]
 class PreprocessPage(BasePage):
     title = "预处理"
     subtitle = "滤波 · 坏导 · ICA 去伪迹 · 分段。设置一次，所有被试通用"
-    side_width = 350
+    side_width = 370
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -156,7 +156,7 @@ class PreprocessPage(BasePage):
             for s in p.subjects:
                 done = s.status == pj.STATUS_DONE
                 it = QListWidgetItem(icon("mdi6.check-circle" if done else "mdi6.circle-outline",
-                                          C["mint"] if done else C["amber"]), s.name)
+                                          C["ok"] if done else C["warn"]), s.name)
                 it.setData(Qt.UserRole, s.name)
                 it.setToolTip(s.source or s.note)
                 self.subs.addItem(it)

@@ -51,7 +51,7 @@ class ReportPage(BasePage):
                 row = QHBoxLayout()
                 row.setSpacing(6)
                 for m in res.metrics[:5]:
-                    row.addWidget(chip(f"{m[0]}：{m[1]}", C["accent_text"], C["accent_soft"]))
+                    row.addWidget(chip(f"{m[0]}：{m[1]}", C["on_soft"], C["soft"]))
                 row.addStretch(1)
                 card.add(row)
             thumbs = QHBoxLayout()
@@ -134,11 +134,11 @@ main{{max-width:1080px;margin:0 auto;padding:32px 20px 60px}}
 h1{{font-size:26px;margin:0 0 4px}} .sub{{color:{C['text2']};margin:0 0 28px}}
 section{{background:{C['card']};border-radius:16px;padding:20px 24px;margin:0 0 20px}}
 h2{{font-size:18px;margin:0}} .meta{{color:{C['muted']};font-size:12px;margin:4px 0 12px}}
-.chips span{{display:inline-block;background:{C['card2']};color:{C['text2']};border-radius:10px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px}}
+.chips span{{display:inline-block;background:{C['field']};color:{C['text2']};border-radius:10px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px}}
 .metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:12px 0}}
-.m{{background:{C['card2']};border-radius:12px;padding:10px 14px}} .k{{color:{C['text2']};font-size:12px}}
+.m{{background:{C['field']};border-radius:12px;padding:10px 14px}} .k{{color:{C['text2']};font-size:12px}}
 .v{{font-size:19px;font-weight:600;margin:2px 0}} .h{{color:{C['muted']};font-size:11px}}
-.note{{color:{C['amber']};font-size:13px}}
+.note{{color:{C['warn']};font-size:13px}}
 figure{{margin:14px 0}} img{{max-width:100%;border-radius:10px}} figcaption{{color:{C['text2']};font-size:12px;margin-top:4px}}
 table{{border-collapse:collapse;width:100%;font-size:13px;margin-top:10px}}
 th,td{{border-bottom:1px solid {C['line']};padding:6px 8px;text-align:left}} th{{color:{C['text2']}}}

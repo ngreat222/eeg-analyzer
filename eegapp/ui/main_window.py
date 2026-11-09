@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self.logw.setReadOnly(True)
         self.logw.setMaximumBlockCount(5000)
         self.logw.setFixedHeight(170)
-        self.logw.setStyleSheet(f"QPlainTextEdit{{background:#191918;border:none;border-top:1px solid {C['line']};"
+        self.logw.setStyleSheet(f"QPlainTextEdit{{background:{C['log_bg']};border:none;border-top:1px solid {C['line']};"
                                 f"border-radius:0;font-family:Consolas,'Microsoft YaHei UI';font-size:12px;"
                                 f"color:{C['text2']};padding:8px 14px;}}")
         self.logw.hide()
@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 16, 10, 14)
         lay.setSpacing(6)
         logo = QLabel()
-        logo.setPixmap(icon("mdi6.head-snowflake-outline", "#5DCAA5").pixmap(34, 34))
+        logo.setPixmap(icon("mdi6.head-snowflake-outline", C["accent"]).pixmap(34, 34))
         logo.setAlignment(Qt.AlignCenter)
         logo.setToolTip(f"{APP_NAME} {__version__}")
         lay.addWidget(logo)
@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
         b = QToolButton()
         b.setObjectName("RailBtn")
         b.setText(text)
-        b.setIcon(icon(ic, "#CECBF6"))
+        b.setIcon(icon(ic, C["nav_icon"], C["accent"]))
         b.setIconSize(QSize(22, 22))
         b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         b.setFixedSize(64, 58)

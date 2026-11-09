@@ -10,6 +10,7 @@ from matplotlib.figure import Figure
 from scipy.ndimage import uniform_filter1d
 from scipy.stats import ttest_ind
 
+from ..theme import C
 from .group import COLORS, _spines
 from .stats import sem, warn_small_n
 
@@ -174,12 +175,12 @@ def plot_timecourse(x, times, mask=None, chance=None, ylim=None, ylabel="解码�
     ax.set_ylim(y0, y1)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.axvline(0, color="#888780", lw=0.8)
+    ax.axvline(0, color=C["axis"], lw=0.8)
     if chance is not None:
-        ax.axhline(chance, color="#888780", lw=0.8, ls="--")
+        ax.axhline(chance, color=C["axis"], lw=0.8, ls="--")
         ax.text(times[-1], chance, " 机会水平", va="bottom", ha="right", fontsize=8)
     else:
-        ax.axhline(0, color="#888780", lw=0.8)
+        ax.axhline(0, color=C["axis"], lw=0.8)
     ax.set_xlabel("时间 (s)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -193,7 +194,7 @@ def plot_ct(acc_mean, times, mask=None, clim=None, title=""):
     im = ax.imshow(acc_mean, origin="lower", cmap="viridis", aspect="auto",
                    extent=[times[0], times[-1], times[0], times[-1]], vmin=clim[0], vmax=clim[1])
     if mask is not None and np.any(mask):
-        ax.contour(times, times, mask, [0.5], colors="#FAC775", linewidths=1.5, linestyles="dashed")
+        ax.contour(times, times, mask, [0.5], colors=C["pos"], linewidths=1.5, linestyles="dashed")
     cb = fig.colorbar(im, ax=ax)
     cb.set_label("解码正确率")
     ax.set_xlabel("测试时间 (s)")

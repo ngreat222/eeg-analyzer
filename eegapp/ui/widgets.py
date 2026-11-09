@@ -3,17 +3,18 @@ import io
 
 import qtawesome as qta
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QLayout, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
                                QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from ..theme import C
 
 
-def icon(name, color=None):
-    return qta.icon(name, color=color or C["text2"])
+def icon(name, color=None, color_on=None):
+    kw = {"color_on": color_on} if color_on else {}
+    return qta.icon(name, color=color or C["text2"], **kw)
 
 
 def btn(text, slot=None, kind=None, icon_name=None, tip=None):
@@ -21,7 +22,7 @@ def btn(text, slot=None, kind=None, icon_name=None, tip=None):
     if kind:
         b.setProperty("kind", kind)
     if icon_name:
-        col = {"primary": C["mint_dark"], "accent": C["accent_text"]}.get(kind, C["text2"])
+        col = {"primary": C["on_accent"], "accent": C["on_soft"], "danger": C["danger"]}.get(kind, C["text2"])
         b.setIcon(icon(icon_name, col))
         b.setIconSize(QSize(16, 16))
     if slot:
@@ -55,11 +56,67 @@ def hbox(*ws, spacing=8, margins=(0, 0, 0, 0)):
     return h
 
 
-def chip(text, fg=C["accent_text"], bg=C["accent_soft"], icon_name=None):
+def chip(text, fg=C["on_soft"], bg=C["soft"], icon_name=None):
     lab = QLabel(text)
     lab.setTextFormat(Qt.PlainText)
     lab.setStyleSheet(f"background:{bg};color:{fg};border-radius:10px;padding:3px 10px;font-size:12px;")
     return lab
+
+
+class FlowLayout(QLayout):
+    """自动换行的横向布局（参数标签用）。"""
+
+    def __init__(self, parent=None, spacing=6):
+        super().__init__(parent)
+        self._items = []
+        self._sp = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return self._do(QRect(0, 0, w, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        s = QSize()
+        for it in self._items:
+            s = s.expandedTo(it.minimumSize())
+        return s
+
+    def _do(self, rect, test):
+        x, y, line_h = rect.x(), rect.y(), 0
+        for it in self._items:
+            hint = it.sizeHint()
+            if x + hint.width() > rect.right() and line_h > 0:
+                x, y, line_h = rect.x(), y + line_h + self._sp, 0
+            if not test:
+                it.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._sp
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.y()
 
 
 class Card(QFrame):
@@ -130,7 +187,7 @@ class Section(QWidget):
         self.toggle.setCheckable(True)
         self.toggle.setChecked(expanded)
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle.setStyleSheet(f"QToolButton{{border:none;background:transparent;color:#AFA9EC;"
+        self.toggle.setStyleSheet(f"QToolButton{{border:none;background:transparent;color:{C['section']};"
                                   f"font-weight:600;font-size:12px;padding:4px 0;}}")
         self.toggle.setCursor(Qt.PointingHandCursor)
         self.toggle.toggled.connect(self._toggled)
@@ -141,12 +198,15 @@ class Section(QWidget):
         self.form.setSpacing(8)
         self.form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # 标签放在输入框上方：窄面板、高缩放比例下也不会把输入框挤出去
+        self.form.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        self.form.setVerticalSpacing(4)
         lay.addWidget(self.body)
         self._toggled(expanded)
 
     def _toggled(self, on):
         self.body.setVisible(on)
-        self.toggle.setIcon(icon("mdi6.chevron-down" if on else "mdi6.chevron-right", "#AFA9EC"))
+        self.toggle.setIcon(icon("mdi6.chevron-down" if on else "mdi6.chevron-right", C["section"]))
 
     def row(self, text, w):
         if text is None:
@@ -238,7 +298,7 @@ class EmptyState(QWidget):
         lay = QVBoxLayout(self)
         lay.addStretch(1)
         ic = QLabel()
-        ic.setPixmap(icon(icon_name, "#534AB7").pixmap(64, 64))
+        ic.setPixmap(icon(icon_name, C["accent"]).pixmap(64, 64))
         ic.setAlignment(Qt.AlignCenter)
         lay.addWidget(ic)
         t = label(title, "H1")
@@ -246,7 +306,7 @@ class EmptyState(QWidget):
         lay.addWidget(t)
         b = label(body, "Sub", wrap=True)
         b.setAlignment(Qt.AlignCenter)
-        b.setMaximumWidth(520)
+        b.setFixedWidth(520)  # 固定宽度，自动换行后的高度才算得对
         lay.addWidget(b, 0, Qt.AlignHCenter)
         if buttons:
             lay.addSpacing(10)
@@ -272,12 +332,9 @@ class ResultView(QScrollArea):
         lay.addWidget(label(res.title, "H1"))
         if res.params:
             chips = QWidget()
-            fl = QHBoxLayout(chips)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(6)
-            for k, v in list(res.params.items())[:7]:
+            fl = FlowLayout(chips)
+            for k, v in res.params.items():
                 fl.addWidget(chip(f"{k} · {v}", C["text2"], C["card"]))
-            fl.addStretch(1)
             lay.addWidget(chips)
         if res.metrics:
             g = MetricGrid(3)
@@ -285,7 +342,7 @@ class ResultView(QScrollArea):
             lay.addWidget(g)
         for n in res.notes:
             import html as _h
-            lay.addWidget(label(f"<span style='color:{C['amber']}'>●</span>&nbsp; {_h.escape(n)}", "Sub", wrap=True,
+            lay.addWidget(label(f"<span style='color:{C['warn']}'>●</span>&nbsp; {_h.escape(n)}", "Sub", wrap=True,
                                 rich=True))
         figs = res.figures
         i = 0
