@@ -37,7 +37,20 @@ HIDDEN = ["sklearn.svm", "sklearn.model_selection", "sklearn.decomposition", "sk
           "matplotlib.backends.backend_qtagg", "matplotlib.backends.backend_agg"]
 
 
+def _app_running():
+    import subprocess
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {NAME}.exe", "/NH"], capture_output=True,
+                             text=True, errors="ignore").stdout
+    except OSError:
+        return False
+    return f"{NAME}.exe" in out
+
+
 def main():
+    if _app_running():
+        print(f"{NAME} 正在运行，请先关闭它再打包（否则旧文件被占用，打包会失败）。")
+        return 1
     sep = os.pathsep
     args = [
         os.path.join(HERE, "main.py"),
