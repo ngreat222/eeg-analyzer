@@ -1,0 +1,15 @@
+mne==1.12.1
+mne-qt-browser==0.7.5
+PySide6==6.12.0
+matplotlib==3.10.9
+numpy==2.4.4
+scipy==1.17.1
+scikit-learn==1.8.0
+h5py==3.16.0
+h5io==0.2.6
+edfio==0.4.18
+eeglabio==0.1.4
+pybv==0.8.1
+neurora==2.0.1
+inverted_encoding==0.2.3
+pyinstaller==6.22.3

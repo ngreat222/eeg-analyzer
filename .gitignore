@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.log
+.idea/
+.vscode/
+# 不要把真实被试数据提交进仓库
+data/
+outputs/
+*_raw.fif
+*-epo.fif
+*-ave.fif
+*-tfr.h5
