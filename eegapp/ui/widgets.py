@@ -272,7 +272,7 @@ class FigureCard(Card):
         b2.clicked.connect(self.save)
         for b in (b1, b2):
             b.setStyleSheet("QToolButton{border:none;background:transparent;padding:4px;border-radius:8px;}"
-                            "QToolButton:hover{background:rgba(255,255,255,0.08);}")
+                            f"QToolButton:hover{{background:{C['icon_hover']};}}")
             b.setCursor(Qt.PointingHandCursor)
             self.head.addWidget(b)
         self.add(canvas)
@@ -444,3 +444,68 @@ def checkbox(text, on=False):
     c = QCheckBox(text)
     c.setChecked(on)
     return c
+
+
+STEP_ICONS = {"done": ("mdi6.check-circle-outline", "ok"), "todo": ("mdi6.circle-outline", "muted"),
+              "wait": ("mdi6.progress-question", "accent"), "warn": ("mdi6.alert-circle-outline", "warn"),
+              "off": ("mdi6.minus-circle-outline", "muted")}
+
+
+class StepList(QFrame):
+    """一列步骤：状态图标、说明、右侧状态文字（像任务清单一样逐项打勾）。"""
+
+    def __init__(self, title=None):
+        super().__init__()
+        self.setObjectName("Card")
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(16, 12, 16, 10)
+        self.lay.setSpacing(0)
+        if title:
+            t = label(title, "H2")
+            t.setContentsMargins(0, 0, 0, 6)
+            self.lay.addWidget(t)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(0)
+        self.lay.addLayout(self.rows)
+
+    def set(self, steps):
+        """steps: [(状态, 名称, 说明, 右侧文字)]，状态取 done / todo / wait / warn / off。"""
+        while self.rows.count():
+            it = self.rows.takeAt(0)
+            old = it.widget()
+            if old is not None:
+                old.hide()
+                old.setParent(None)
+                old.deleteLater()
+        for i, (state, name, desc, right) in enumerate(steps):
+            w = QWidget()
+            if i:
+                w.setStyleSheet(f"QWidget#StepRow{{border-top:1px solid {C['line']};}}")
+            w.setObjectName("StepRow")
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 7, 0, 7)
+            h.setSpacing(10)
+            ic_name, col = STEP_ICONS.get(state, STEP_ICONS["todo"])
+            ic = QLabel()
+            ic.setPixmap(icon(ic_name, C[col]).pixmap(17, 17))
+            ic.setFixedWidth(20)
+            h.addWidget(ic, 0, Qt.AlignTop)
+            n = label(name)
+            n.setFixedWidth(64)
+            n.setStyleSheet(f"color:{C['text']};")
+            h.addWidget(n, 0, Qt.AlignTop)
+            d = label(desc, "Sub", wrap=True)
+            d.setStyleSheet(f"color:{C['text2'] if state != 'off' else C['muted']};font-size:13px;")
+            h.addWidget(d, 1)
+            r = label(right, "Muted")
+            r.setStyleSheet(f"color:{C[col] if state in ('wait', 'warn') else C['muted']};font-size:12px;")
+            h.addWidget(r, 0, Qt.AlignTop)
+            self.rows.addWidget(w)
+
+
+def side_list(width=200):
+    """页面左侧的被试 / 记录列表。"""
+    lst = QListWidget()
+    lst.setObjectName("SubList")
+    lst.setFixedWidth(width)
+    return lst

@@ -10,6 +10,9 @@ RAW_FILE_FILTER = (
     "脑电文件 (*.edf *.bdf *.gdf *.vhdr *.set *.cnt *.fif *.fif.gz *.mff *.eeg *.vmrk "
     "*.data *.nxe *.lay *.dat *.snirf *.xdf *.mef *.edf+ *.bdf+);;所有文件 (*)"
 )
+# 扫描文件夹时认作脑电数据的扩展名
+RAW_EXTS = (".edf", ".bdf", ".gdf", ".vhdr", ".set", ".cnt", ".fif", ".fif.gz", ".mff", ".nxe", ".lay",
+            ".snirf", ".xdf", ".edf+", ".bdf+")
 
 
 def parse_event_map(text):
@@ -33,8 +36,13 @@ def unify_event_name(desc, event_map):
     return event_map.get(name, name)
 
 
-def read_raw_any(path, event_map=None, log=print):
-    """读取任意 MNE 支持格式的连续脑电，返回已载入内存的 Raw。"""
+def read_header(path, log=print):
+    """只读文件头（通道、采样率、时长、开始时间），不载入数据。"""
+    return read_raw_any(path, log=log, preload=False)[0]
+
+
+def read_raw_any(path, event_map=None, log=print, preload=True):
+    """读取任意 MNE 支持格式的连续脑电，返回已载入内存的 Raw（preload=False 时只读文件头）。"""
     event_map = event_map or {}
     p = Path(str(path).strip().strip('"')).expanduser()
     if not p.exists():
@@ -60,6 +68,8 @@ def read_raw_any(path, event_map=None, log=print):
                 raise
             log(f"注释用 {enc} 解码失败，换下一种编码重试")
 
+    if not preload:
+        return raw, p
     raw.load_data()
 
     # 没有 annotations、但带触发通道（如 BDF 的 Status）时，从触发通道提取事件

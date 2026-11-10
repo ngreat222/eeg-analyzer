@@ -231,7 +231,7 @@ def note(text):
     lab = QLabel(text)
     lab.setWordWrap(True)
     lab.setTextFormat(Qt.RichText)
-    lab.setStyleSheet("color:#a6adc8;")
+    lab.setObjectName("Sub")
     return lab
 
 

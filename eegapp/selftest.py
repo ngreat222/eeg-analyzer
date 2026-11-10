@@ -35,14 +35,25 @@ def run(out_path):
 
     def raw_pipeline():
         p = pj.Project(os.path.join(tmp, "raw"))
-        s = pj.add_raw_files(p, [compat.resource_path("sample_data", "eeglab_data.set")])[0]
+        r = pj.add_raw_files(p, [compat.resource_path("sample_data", "eeglab_data.set")])[0]
+        s = p.get_rec(r.id)[0]
         s.locs = compat.resource_path("sample_data", "eeglab_chan32.locs")
         s.rename_from_locs = True
         p.pipeline = pj.Pipeline(notch=60, tmin=-1, tmax=2, bl0=-0.5, bl1=0, reject_uv=200, ica_n="15")
         ep = pj.run_pipeline(p, s, log=quiet)
         p.save()
-        return f"{len(ep)} epochs, ICA 去除 {s.ica_exclude}"
+        return f"{len(ep)} epochs, ICA 去除 {r.ica_exclude}"
     check("原始数据预处理（读取、电极、滤波、ICA、分段）", raw_pipeline)
+
+    def event_tools():
+        from .core import events as ev
+        import pandas as pd
+        tab = pd.DataFrame({"latency": [1.0, 2.5, 4.0], "marker_value": [901, 902, 1]})
+        df = ev.table_to_events(tab, ev.guess_columns(tab), 128, rec_duration=10)
+        df, _ = ev.apply_rules(df, ev.parse_rules("9xx=刺激"))
+        df = ev.merge(df, ev.fixed_interval(0, 6, 2, "片段"))
+        return " ".join(f"{n}×{c}" for n, c, _ in ev.summary(df))
+    check("事件工具（表格导入、改名、固定间隔）", event_tools)
     check("标准电极模板", lambda: len(mne.channels.make_standard_montage("standard_1020").ch_names))
 
     def demo():

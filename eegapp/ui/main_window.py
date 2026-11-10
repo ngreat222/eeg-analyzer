@@ -5,28 +5,46 @@ from datetime import datetime
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget, QToolButton,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget,
                                QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__
 from ..core import project as pj
-from ..theme import C, QSS
+from .. import theme
+from ..theme import C
 from .analysis_pages import DecodePage, ERPPage, RSAPage, TFRPage
 from .common import LOG, TaskRunner, log
+from .events_page import EventsPage
 from .preprocess_page import PreprocessPage
 from .project_page import ProjectPage, ask_project_name
 from .report_page import ReportPage
-from .widgets import icon
+from .widgets import btn, icon, label
 
 NAV = [("项目", "mdi6.folder-multiple-outline", ProjectPage),
        ("预处理", "mdi6.tune-variant", PreprocessPage),
+       ("事件", "mdi6.map-marker-path", EventsPage),
        ("ERP", "mdi6.sine-wave", ERPPage),
        ("时频", "mdi6.chart-bell-curve-cumulative", TFRPage),
        ("解码", "mdi6.brain", DecodePage),
        ("RSA", "mdi6.dots-grid", RSAPage),
        ("报告", "mdi6.file-chart-outline", ReportPage)]
+NAV_TEXT = {"事件": "事件与分段"}
+NAV_GROUPS = {"项目": "数据", "ERP": "分析", "报告": "输出"}
 
 PROJECTS_ROOT = os.path.join(os.path.expanduser("~"), "Documents", "脑电分析项目")
+
+
+def _check_qss():
+    """勾选框里的对勾：QSS 只能引用图片文件，所以把图标画成 png 放到临时目录。"""
+    import tempfile
+    try:
+        path = os.path.join(tempfile.gettempdir(), "eeg_analyzer_check.png")
+        icon("mdi6.check-bold", "#ffffff").pixmap(32, 32).save(path)
+        url = path.replace("\\", "/")
+        return (f"\nQCheckBox::indicator:checked, QTableView::indicator:checked, QListView::indicator:checked "
+                f"{{ image: url({url}); }}\n")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 class MainWindow(QMainWindow):
@@ -34,7 +52,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.resize(1520, 940)
-        self.setStyleSheet(QSS)
+        # 样式只加在主窗口上（对话框是它的子窗口，会继承）；MNE 的波形浏览器有自己的主题，不能被它影响
+        self.setStyleSheet(theme.QSS + _check_qss())
         self.project = None
         self.reports = []
         self.runner = TaskRunner(self)
@@ -96,45 +115,65 @@ class MainWindow(QMainWindow):
     def _rail(self):
         rail = QWidget()
         rail.setObjectName("Rail")
-        rail.setFixedWidth(84)
+        rail.setFixedWidth(212)
         lay = QVBoxLayout(rail)
-        lay.setContentsMargins(10, 16, 10, 14)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 16, 12, 12)
+        lay.setSpacing(2)
+        head = QHBoxLayout()
+        head.setContentsMargins(6, 0, 0, 0)
+        head.setSpacing(8)
         logo = QLabel()
-        logo.setPixmap(icon("mdi6.head-snowflake-outline", C["accent"]).pixmap(34, 34))
-        logo.setAlignment(Qt.AlignCenter)
-        logo.setToolTip(f"{APP_NAME} {__version__}")
-        lay.addWidget(logo)
+        logo.setPixmap(icon("mdi6.head-snowflake-outline", C["accent"]).pixmap(22, 22))
+        head.addWidget(logo)
+        head.addWidget(label("脑电分析", "Brand"))
+        head.addStretch(1)
+        lay.addLayout(head)
         lay.addSpacing(14)
+        nb = btn("新建项目", self.new_project, None, "mdi6.plus")
+        nb.setStyleSheet("text-align:left;padding-left:10px;")
+        lay.addWidget(nb)
+        ob = btn("打开项目", self.open_project, "nav", "mdi6.folder-open-outline")
+        lay.addWidget(ob)
+        lay.addSpacing(10)
+        self.proj_name = label("未打开项目", "Sub")
+        self.proj_name.setContentsMargins(10, 0, 0, 0)
+        self.proj_name.setWordWrap(True)
+        lay.addWidget(self.proj_name)
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
         self.nav_btns = {}
         for i, (name, ic, _) in enumerate(NAV):
-            b = self._rail_btn(name, ic)
+            if name in NAV_GROUPS:
+                cap = label(NAV_GROUPS[name], "Caption")
+                cap.setContentsMargins(10, 14, 0, 4)
+                lay.addWidget(cap)
+            b = self._rail_btn(NAV_TEXT.get(name, name), ic)
             b.setCheckable(True)
             b.clicked.connect(lambda _=False, n=name: self.goto(n))
             self.nav.addButton(b, i)
             self.nav_btns[name] = b
             lay.addWidget(b)
-            if name in ("预处理", "RSA"):
-                lay.addSpacing(8)
         lay.addStretch(1)
-        self.log_btn = self._rail_btn("日志", "mdi6.console-line")
+        self.log_btn = self._rail_btn("运行日志", "mdi6.console-line")
         self.log_btn.setCheckable(True)
         self.log_btn.toggled.connect(self.logw.setVisible)
         lay.addWidget(self.log_btn)
+        light = theme.MODE == "light"
+        tb = self._rail_btn("切换到深色" if light else "切换到亮色",
+                            "mdi6.weather-night" if light else "mdi6.white-balance-sunny")
+        tb.setCheckable(False)
+        tb.clicked.connect(self.toggle_theme)
+        lay.addWidget(tb)
+        ver = label(f"版本 {__version__}", "Caption")
+        ver.setContentsMargins(10, 6, 0, 0)
+        lay.addWidget(ver)
         return rail
 
     @staticmethod
     def _rail_btn(text, ic):
-        b = QToolButton()
-        b.setObjectName("RailBtn")
-        b.setText(text)
-        b.setIcon(icon(ic, C["nav_icon"], C["accent"]))
-        b.setIconSize(QSize(22, 22))
-        b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        b.setFixedSize(64, 58)
-        b.setCursor(Qt.PointingHandCursor)
+        b = btn(text, None, "nav")
+        b.setIcon(icon(ic, C["muted"], C["text"]))
+        b.setIconSize(QSize(17, 17))
         return b
 
     def goto(self, name, subject=None):
@@ -159,6 +198,8 @@ class MainWindow(QMainWindow):
         self.stack.currentWidget().on_show()
         p = self.project
         if p:
+            self.proj_name.setText(p.name)
+            self.proj_name.setToolTip(p.folder)
             self.status.setText(f"{p.name}　·　{len(p.done_subjects())}/{len(p.subjects)} 名被试可分析　·　{p.folder}")
 
     def project_changed(self, msg=""):
@@ -228,6 +269,24 @@ class MainWindow(QMainWindow):
                                        self, "演示项目", "已生成 10 名被试的合成数据（模拟信号，不是真实数据）。\n\n"
                                        "包含 First / Repetition 两个条件和 8 类“朝向”标签，"
                                        "可以直接去 ERP、时频、解码、RSA 页试试。")))
+
+    def toggle_theme(self):
+        new = "dark" if theme.MODE == "light" else "light"
+        name = "亮色" if new == "light" else "深色"
+        if self.runner.busy:
+            QMessageBox.information(self, "请稍等", "计算完成后再切换外观。")
+            return
+        if QMessageBox.question(self, "切换外观", f"换成{name}外观需要重启软件，项目会先自动保存。现在重启吗？") \
+                != QMessageBox.Yes:
+            return
+        QSettings("EEGAnalyzer", "EEGAnalyzer").setValue("theme", new)
+        if self.project:
+            self.project.save()
+        import sys
+        from PySide6.QtCore import QProcess
+        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        QProcess.startDetached(sys.executable, args)
+        self.close()
 
     def add_report(self, res):
         self.reports.append((datetime.now(), res))

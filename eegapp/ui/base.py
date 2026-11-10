@@ -94,7 +94,8 @@ class BasePage(QWidget):
             return False
         if need_done and not p.done_subjects():
             QMessageBox.information(self, "还没有可分析的数据",
-                                    "项目里还没有预处理好的被试。请在「项目」导入分段数据，或到「预处理」处理原始数据。")
+                                    "项目里还没有分段好的被试。原始数据要先到「预处理」处理，再到「事件与分段」分段；"
+                                    "也可以在「项目」直接导入分段数据。")
             return False
         return True
 

@@ -24,11 +24,18 @@ def main():
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
 
+    # 对话框里的“确定 / 取消”等按钮用中文
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+    tr = QTranslator(app)
+    if tr.load("qtbase_zh_CN", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+        app.installTranslator(tr)
+
     pm = QPixmap(440, 170)
-    pm.fill(QColor("#26215C"))
+    from eegapp.theme import C
+    pm.fill(QColor(C["rail"]))
     splash = QSplashScreen(pm)
     splash.setFont(QFont("Microsoft YaHei UI", 12))
-    splash.showMessage("脑电分析软件\n正在加载分析引擎 …", Qt.AlignCenter, QColor("#EEEDFE"))
+    splash.showMessage("脑电分析软件\n正在加载分析引擎 …", Qt.AlignCenter, QColor(C["text"]))
     splash.show()
     app.processEvents()
 

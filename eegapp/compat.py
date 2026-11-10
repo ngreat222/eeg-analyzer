@@ -25,6 +25,12 @@ def setup():
     # 静态图在后台线程里用 Agg 画，再嵌进 Qt 画布；交互式波形浏览器用 mne-qt-browser
     matplotlib.use("Agg")
     from . import theme
+    try:
+        from PySide6.QtCore import QSettings
+        mode = os.environ.get("EEG_THEME") or QSettings("EEGAnalyzer", "EEGAnalyzer").value("theme", "dark")
+        theme.use(str(mode))
+    except Exception:  # noqa: BLE001
+        theme.use("dark")
     theme.apply_mpl()
 
     # inverted_encoding 0.2.3 仍调用已从新版 scipy 移除的 scipy.signal.gaussian
