@@ -130,7 +130,7 @@ class EventsPage(BasePage):
         p.bl0, p.bl1 = self.b0.value(), self.b1.value()
         p.fixed_len, p.fixed_overlap, p.reject_uv = self.flen.value(), self.fov.value(), self.rej.value()
         if self.ev_list.count():
-            all_ev = [self.ev_list.item(i).text() for i in range(self.ev_list.count())]
+            all_ev = self.ev_list.names()
             sel = self.ev_list.checked()
             p.events = [] if set(sel) == set(all_ev) else sel
         self.project.save()

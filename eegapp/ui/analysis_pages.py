@@ -11,6 +11,21 @@ from .common import combo, fspin, ispin, line, log
 from .widgets import CheckList, EmptyState, ResultView, btn, checkbox, hbox, label
 
 
+def fill_conditions(cl, project, scope, prev):
+    """条件列表：列出所有被试出现过的条件，并标出有多少人有。默认勾选全员都有的前两个。"""
+    if project is None or not project.done_subjects():
+        cl.set_items([])
+        return
+    opts = project.condition_options(scope)
+    names = [n for n, _, _ in opts]
+    items = [(n, "" if k == total or total == 1 else f"{k}/{total} 人") for n, k, total in opts]
+    keep = [n for n in prev if n in names]
+    if not keep:
+        full = [n for n, k, total in opts if k == total]
+        keep = (full or names)[:2]
+    cl.set_items(items, checked=keep)
+
+
 def _pair(a, b):
     from PySide6.QtWidgets import QWidget
     w = QWidget()
@@ -62,15 +77,16 @@ class ERPPage(_AnalysisPage):
         self.end_side()
         self.run_btn = btn("运行 ERP 分析", self.go, "primary", "mdi6.play")
         self.action_row(self.run_btn)
-        self.scope.currentIndexChanged.connect(self._tests)
+        self.scope.currentIndexChanged.connect(self._fill_conds)
         self.conds.changed.connect(self._tests)
 
     def on_show(self):
         super().on_show()
-        p = self.project
-        refresh_scope(self.scope, p)
-        if p and p.done_subjects():
-            self.conds.set_items(p.conditions())
+        refresh_scope(self.scope, self.project)
+        self._fill_conds()
+
+    def _fill_conds(self):
+        fill_conditions(self.conds, self.project, self.scope.currentData(), self.conds.checked())
         self._tests()
 
     def _tests(self):
@@ -134,14 +150,15 @@ class TFRPage(_AnalysisPage):
         self.niter = s.row("置换次数", ispin(500, 50, 100000, 100))
         self.end_side()
         self.action_row(btn("运行时频分析", self.go, "primary", "mdi6.play"))
+        self.scope.currentIndexChanged.connect(self._fill_conds)
 
     def on_show(self):
         super().on_show()
-        p = self.project
-        refresh_scope(self.scope, p)
-        if p and p.done_subjects():
-            conds = p.conditions()
-            self.conds.set_items(conds, checked=self.conds.checked() or conds[:2])
+        refresh_scope(self.scope, self.project)
+        self._fill_conds()
+
+    def _fill_conds(self):
+        fill_conditions(self.conds, self.project, self.scope.currentData(), self.conds.checked())
 
     def go(self):
         if not self.need_project():

@@ -251,6 +251,27 @@ class Project:
         first = list(self.epochs(self.done_subjects()[0].name).event_id)
         return [c for c in first if c in common]
 
+    def condition_options(self, scope=None):
+        """可选的条件：所有被试出现过的事件名，以及“文本/刺激出现”拆开后的“文本”“刺激出现”。
+
+        返回 [(条件, 有这个条件的被试数, 被试总数)]，按覆盖的被试数从多到少排。
+        scope 为某个被试名时只看这个被试。
+        """
+        subs = [self.get(scope)] if scope and scope != "全组" else self.done_subjects()
+        count, order = {}, []
+        for s in subs:
+            names = []
+            for k in self.epochs(s.name).event_id:
+                parts = k.split("/")
+                names += [k] + (parts if len(parts) > 1 else [])
+            names = list(dict.fromkeys(names))
+            for n in names:
+                if n not in count:
+                    order.append(n)
+                count[n] = count.get(n, 0) + 1
+        rank = {n: i for i, n in enumerate(order)}
+        return sorted(((n, count[n], len(subs)) for n in order), key=lambda x: (-x[1], rank[x[0]]))
+
     def label_columns(self):
         """可用于解码 / RSA 的标签：条件本身，加上分段数据 metadata 里的列。"""
         cols = ["条件"]

@@ -28,13 +28,35 @@ class Result:
     table_title: str = "每名被试的数值"
 
 
-def _subjects(project, scope):
+def has_condition(ep, c):
+    try:
+        return len(ep[c]) > 0
+    except KeyError:
+        return False
+
+
+def _subjects(project, scope, conditions=None, log=print):
+    """要分析的被试。给了 conditions 时，全组分析只保留每个条件都有试次的被试，其余跳过并提示。"""
     done = project.done_subjects()
     if not done:
-        raise ValueError("项目里还没有预处理好的被试。请先在「项目」导入数据，或在「预处理」处理原始数据。")
-    if scope == GROUP:
-        return [(s.name, project.epochs(s.name)) for s in done]
-    return [(scope, project.epochs(scope))]
+        raise ValueError("项目里还没有分段好的被试。原始数据先到「预处理」处理，再到「事件与分段」分段。")
+    if scope != GROUP:
+        ep = project.epochs(scope)
+        miss = [c for c in conditions or [] if not has_condition(ep, c)]
+        if miss:
+            raise ValueError(f"{scope} 没有条件 {'、'.join(miss)} 的试次")
+        return [(scope, ep)]
+    subs = [(s.name, project.epochs(s.name)) for s in done]
+    if conditions:
+        keep = [(n, e) for n, e in subs if all(has_condition(e, c) for c in conditions)]
+        skipped = [n for n, _ in subs if n not in {k for k, _ in keep}]
+        if not keep:
+            raise ValueError(f"没有哪个被试同时有 {'、'.join(conditions)} 这些条件")
+        if skipped:
+            log(f"⚠ {len(skipped)} 个被试缺少所选条件，这次不参与分析：{'、'.join(skipped[:10])}"
+                + (" 等" if len(skipped) > 10 else ""))
+        subs = keep
+    return subs
 
 
 def _picks(ep, channels):
@@ -111,9 +133,9 @@ def _compare_metrics(vals, paired):
 # ====================================================================== ERP
 def erp(project, scope, conditions, channels, win, metric_win, test, correction, alpha=0.05,
         n_iter=1000, cluster_p=0.05, factor_levels=None, topo_times="auto", log=print):
-    subs = _subjects(project, scope)
     if not conditions:
         raise ValueError("请至少选择一个条件")
+    subs = _subjects(project, scope, conditions, log)
     level = "group" if scope == GROUP and len(subs) >= 2 else "trial"
     ep0 = subs[0][1]
     picks = _picks(ep0, channels)
@@ -204,9 +226,9 @@ BANDS = {"θ 4–8 Hz": (4, 8), "α 8–12 Hz": (8, 12), "β 12–30 Hz": (12, 3
 
 def tfr(project, scope, conditions, channels, fmin, fmax, fstep, cycles_div, baseline, win, metric_band,
         metric_win, do_stats=True, p=0.05, cluster_p=0.05, n_iter=500, decim=1, log=print):
-    subs = _subjects(project, scope)
     if len(conditions) not in (1, 2):
         raise ValueError("时频分析请选择 1 个或 2 个条件")
+    subs = _subjects(project, scope, conditions, log)
     level = "group" if scope == GROUP and len(subs) >= 2 else "trial"
     ep0 = subs[0][1]
     picks = _picks(ep0, channels)
@@ -306,16 +328,26 @@ def band_topomaps(subs, conditions):
 
 # ====================================================================== 解码 / IEM / RSA
 def decoding_data(project, scope, label, classes, log=print):
-    subs = _subjects(project, scope)
+    subs = _subjects(project, scope, log=log)
     per_sub = []
     for name, ep in subs:
         if label == "条件":
             inv = {v: k for k, v in ep.event_id.items()}
             lab = np.array([inv[e] for e in ep.events[:, 2]])
-        else:
+        elif ep.metadata is not None and label in ep.metadata:
             lab = ep.metadata[label].astype(str).to_numpy()
+        else:
+            if scope != GROUP:
+                raise ValueError(f"{name} 的分段数据里没有标签“{label}”")
+            log(f"⚠ {name} 没有标签“{label}”，这次不参与解码")
+            continue
         keep = np.isin(lab, classes)
+        if scope == GROUP and min(int(np.sum(lab == c)) for c in classes) < 2:
+            log(f"⚠ {name} 缺少某个类别的试次，这次不参与解码")
+            continue
         per_sub.append((ep.get_data(picks="eeg")[keep] * 1e6, lab[keep]))
+    if not per_sub:
+        raise ValueError("没有被试同时具备所选的全部类别")
     counts = [[int(np.sum(lab == c)) for c in classes] for _, lab in per_sub]
     n_min = int(np.min(counts))
     if n_min < 2:

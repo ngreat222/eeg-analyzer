@@ -236,11 +236,14 @@ class CheckList(QListWidget):
         prev = set(self.checked())
         self.blockSignals(True)
         self.clear()
-        keep = set(checked) if checked is not None else (prev & set(map(str, items)))
-        for it in items:
-            li = QListWidgetItem(str(it))
+        names = [str(it[0]) if isinstance(it, tuple) else str(it) for it in items]
+        keep = set(checked) if checked is not None else (prev & set(names))
+        for it, name in zip(items, names):
+            # 条目可以是 (名称, 显示的补充说明)：界面显示“名称　说明”，checked() 仍返回名称
+            li = QListWidgetItem(f"{name}　{it[1]}" if isinstance(it, tuple) and it[1] else name)
+            li.setData(Qt.UserRole, name)
             li.setFlags(li.flags() | Qt.ItemIsUserCheckable)
-            on = str(it) in keep or (not keep and default_all)
+            on = name in keep or (not keep and default_all)
             li.setCheckState(Qt.Checked if on else Qt.Unchecked)
             self.addItem(li)
         self.blockSignals(False)
@@ -250,7 +253,18 @@ class CheckList(QListWidget):
         self.changed.emit()
 
     def checked(self):
-        return [self.item(i).text() for i in range(self.count()) if self.item(i).checkState() == Qt.Checked]
+        return [self.item(i).data(Qt.UserRole) or self.item(i).text() for i in range(self.count())
+                if self.item(i).checkState() == Qt.Checked]
+
+    def names(self):
+        return [self.item(i).data(Qt.UserRole) or self.item(i).text() for i in range(self.count())]
+
+    def mousePressEvent(self, e):
+        # 点文字也能勾选（默认只有点小方框才行）
+        it = self.itemAt(e.position().toPoint())
+        super().mousePressEvent(e)
+        if it is not None and e.button() == Qt.LeftButton and e.position().x() > 30:
+            it.setCheckState(Qt.Unchecked if it.checkState() == Qt.Checked else Qt.Checked)
 
 
 class FigureCard(Card):
