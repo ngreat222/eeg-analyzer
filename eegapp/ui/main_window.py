@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.logw.setMaximumBlockCount(5000)
         self.logw.setFixedHeight(170)
         self.logw.setStyleSheet(f"QPlainTextEdit{{background:{C['log_bg']};border:none;border-top:1px solid {C['line']};"
-                                f"border-radius:0;font-family:Consolas,'Microsoft YaHei UI';font-size:12px;"
+                                f"border-radius:0;font-family:{theme.MONO};font-size:12px;"
                                 f"color:{C['text2']};padding:8px 14px;}}")
         self.logw.hide()
         central = QWidget()

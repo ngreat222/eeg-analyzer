@@ -19,7 +19,7 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("脑电分析软件")
-    icon = compat.resource_path("assets", "icon.ico")
+    icon = compat.resource_path("assets", "icon.icns" if sys.platform == "darwin" else "icon.ico")
     import os
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
@@ -34,7 +34,10 @@ def main():
     from eegapp.theme import C
     pm.fill(QColor(C["rail"]))
     splash = QSplashScreen(pm)
-    splash.setFont(QFont("Microsoft YaHei UI", 12))
+    f = QFont()
+    f.setFamilies(["Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB"])
+    f.setPointSize(12)
+    splash.setFont(f)
     splash.showMessage("脑电分析软件\n正在加载分析引擎 …", Qt.AlignCenter, QColor(C["text"]))
     splash.show()
     app.processEvents()

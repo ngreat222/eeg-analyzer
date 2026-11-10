@@ -1,4 +1,4 @@
-"""把脑电分析软件打包成 Windows 程序（PyInstaller，文件夹模式）。
+"""把脑电分析软件打包成 Windows 或 macOS 程序（PyInstaller，文件夹模式）。
 
 用法（在本文件夹里）：
     D:\\miniconda\\python.exe build_exe.py                    只打包程序文件夹
@@ -7,6 +7,9 @@
 
 输出：D:\\脑电分析软件\\脑电分析软件.exe（整个文件夹一起拷贝才能运行）。
 打包放在 OneDrive 外面，避免几百 MB 的程序文件被同步。
+
+macOS（PyInstaller 不能跨平台，必须在 Mac 上打包；仓库里的 GitHub Actions 会自动做）：
+    python build_exe.py --dmg      生成 dist/脑电分析软件.app 和 .dmg 磁盘映像
 """
 import os
 import shutil
@@ -15,8 +18,9 @@ import sys
 import PyInstaller.__main__
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DIST = os.environ.get("EEG_DIST", r"D:\脑电分析软件")
-WORK = os.environ.get("EEG_WORK", r"D:\脑电分析软件_build")
+IS_MAC = sys.platform == "darwin"
+DIST = os.environ.get("EEG_DIST", os.path.join(HERE, "dist") if IS_MAC else r"D:\脑电分析软件")
+WORK = os.environ.get("EEG_WORK", os.path.join(HERE, "build") if IS_MAC else r"D:\脑电分析软件_build")
 NAME = "脑电分析软件"
 
 # 用不到、但会被 MNE 等库的可选导入顺带拉进来的大包
@@ -42,6 +46,8 @@ HIDDEN = ["sklearn.svm", "sklearn.model_selection", "sklearn.decomposition", "sk
 
 def _app_running():
     import subprocess
+    if os.name != "nt":
+        return False
     try:
         out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {NAME}.exe", "/NH"], capture_output=True,
                              text=True, errors="ignore").stdout
@@ -60,12 +66,14 @@ def main():
         "--name", NAME,
         "--noconfirm", "--clean", "--windowed",
         "--distpath", DIST, "--workpath", WORK, "--specpath", WORK,
-        "--icon", os.path.join(HERE, "assets", "icon.ico"),
+        "--icon", os.path.join(HERE, "assets", "icon.icns" if IS_MAC else "icon.ico"),
         "--add-data", f"{os.path.join(HERE, 'sample_data')}{sep}sample_data",
         "--add-data", f"{os.path.join(HERE, 'assets')}{sep}assets",
         "--paths", HERE,
         "--contents-directory", "_internal",
     ]
+    if IS_MAC:
+        args += ["--osx-bundle-identifier", "com.eeganalyzer.app"]
     # PyInstaller 的 mne 钩子会漏掉部分标准电极模板（colin27 / fsaverage / spherical）和图标，显式补上
     import mne
     mne_dir = os.path.dirname(mne.__file__)
@@ -87,6 +95,37 @@ def main():
     print(f"\n完成：{os.path.join(out, NAME + '.exe')}")
     if "--installer" in sys.argv:
         return make_installer(out)
+    if IS_MAC and "--dmg" in sys.argv:
+        return make_dmg()
+    return 0
+
+
+def make_dmg():
+    """macOS：把 .app、“应用程序”文件夹的替身和说明一起做成 .dmg 磁盘映像。"""
+    import platform
+    import subprocess
+    sys.path.insert(0, HERE)
+    from eegapp import __version__
+    app = os.path.join(DIST, NAME + ".app")
+    if not os.path.isdir(app):
+        print(f"没找到 {app}")
+        return 1
+    arch = "arm64" if platform.machine() == "arm64" else "x86_64"
+    stage = os.path.join(WORK, "dmg")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    subprocess.run(["ditto", app, os.path.join(stage, NAME + ".app")], check=True)
+    os.symlink("/Applications", os.path.join(stage, "应用程序"))
+    for f in ("使用说明.md", "macOS 安装说明.txt"):
+        src = os.path.join(HERE, f)
+        if os.path.exists(src):
+            shutil.copy(src, stage)
+    out = os.path.join(DIST, f"eeg-analyzer-{__version__}-macos-{arch}.dmg")
+    if os.path.exists(out):
+        os.remove(out)
+    subprocess.run(["hdiutil", "create", "-volname", NAME, "-srcfolder", stage, "-ov", "-format", "UDZO", out],
+                   check=True)
+    print(f"磁盘映像：{out}")
     return 0
 
 

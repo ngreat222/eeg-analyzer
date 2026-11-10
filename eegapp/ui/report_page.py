@@ -89,7 +89,9 @@ class ReportPage(BasePage):
         log(f"报告已导出：{path}")
         r = QMessageBox.question(self, "导出完成", f"已导出到：\n{os.path.dirname(path)}\n\n现在打开报告吗？")
         if r == QMessageBox.Yes:
-            os.startfile(path)  # noqa: S606
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 def export_report(out, project_name, items):
@@ -129,7 +131,7 @@ def export_report(out, project_name, items):
     page = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(project_name)} 分析报告</title>
 <style>
-body{{margin:0;background:{C['bg']};color:{C['text']};font-family:"Microsoft YaHei UI","PingFang SC",sans-serif;}}
+body{{margin:0;background:{C['bg']};color:{C['text']};font-family:"Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",sans-serif;}}
 main{{max-width:1080px;margin:0 auto;padding:32px 20px 60px}}
 h1{{font-size:26px;margin:0 0 4px}} .sub{{color:{C['text2']};margin:0 0 28px}}
 section{{background:{C['card']};border-radius:16px;padding:20px 24px;margin:0 0 20px}}

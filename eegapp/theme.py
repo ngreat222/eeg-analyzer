@@ -89,8 +89,9 @@ def use(mode):
     QSS = _qss()
 
 
-SERIF = '"Cambria", "Noto Serif SC", "Source Han Serif SC", "SimSun"'
-SANS = '"Microsoft YaHei UI", "Microsoft YaHei"'
+SERIF = '"Cambria", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun"'
+SANS = '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue"'
+MONO = '"Consolas", "Menlo", "SF Mono", "Microsoft YaHei UI", "PingFang SC"'
 
 
 def _qss():
@@ -199,7 +200,8 @@ def apply_mpl():
         "legend.frameon": False, "legend.labelcolor": C["text2"],
         "axes.prop_cycle": cycler(color=SERIES), "axes.titleweight": "normal", "axes.titlesize": 12,
         "axes.spines.top": False, "axes.spines.right": False,
-        "font.sans-serif": ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "DejaVu Sans"],
+        "font.sans-serif": ["Microsoft YaHei", "SimHei", "PingFang SC", "Hiragino Sans GB", "Heiti SC", "STHeiti",
+                            "Arial Unicode MS", "Noto Sans CJK SC", "DejaVu Sans"],
         "axes.unicode_minus": False, "figure.dpi": 100, "lines.linewidth": 1.7,
         "image.cmap": "RdBu_r",
     })

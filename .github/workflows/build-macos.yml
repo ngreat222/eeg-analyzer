@@ -1,0 +1,73 @@
+# 在 GitHub 的 macOS 云端电脑上打包 Mac 版（PyInstaller 不能在 Windows 上打 Mac 程序）。
+# 分别生成 Apple 芯片（arm64）和 Intel 芯片（x86_64）两个 .dmg，并在打包后运行自检。
+# 手动运行：仓库 Actions → “macOS 版” → Run workflow；填了发布版本号（如 v2.1.2）就把 dmg 传到那个 Release。
+name: macOS 版
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "把 dmg 上传到哪个 Release（如 v2.1.2，留空则只生成下载附件）"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      EEG_DIST: dist
+      EEG_WORK: build
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      - name: 打包 .app 和 .dmg
+        run: python build_exe.py --dmg
+
+      - name: 自检（无界面模式）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          "dist/脑电分析软件.app/Contents/MacOS/脑电分析软件" --selftest "$PWD/selftest-${{ matrix.arch }}.txt"
+          cat "selftest-${{ matrix.arch }}.txt"
+          grep -q "全部通过" "selftest-${{ matrix.arch }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            selftest-*.txt
+          if-no-files-found: warn
+
+      - name: 上传到 Release
+        if: github.event_name == 'push' || github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: gh release upload "$TAG" dist/*.dmg --clobber
