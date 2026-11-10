@@ -12,7 +12,9 @@
 
 ## 下载使用
 
-到 [Releases](../../releases) 下载 `eeg-analyzer-*-windows-x64.zip`，解压后双击 `脑电分析软件.exe`。整个文件夹要放在一起。
+到 [Releases](../../releases) 下载 `脑电分析软件-安装.exe`，双击安装：可以选择安装位置，会在桌面和开始菜单建快捷方式，不需要管理员权限。
+
+也可以下载 `eeg-analyzer-*-windows-x64.zip` 免安装版，解压后双击 `脑电分析软件.exe`。整个文件夹要放在一起，只拷 exe 会提示找不到 python313.dll。
 
 ## 从源码运行
 
