@@ -71,6 +71,23 @@ def run(out_path):
         return f"{len(need)} 个"
     check("可选组件都已打包", optional_packages)
 
+    def cjk_fonts():
+        """图表和界面都要找得到中文字体，否则中文会显示成方框（Windows 微软雅黑 / macOS 苹方、冬青黑体）。"""
+        import matplotlib
+        from matplotlib import font_manager as fm
+        from PySide6.QtGui import QFontDatabase
+        have = {f.name for f in fm.fontManager.ttflist}
+        mpl_font = next((n for n in matplotlib.rcParams["font.sans-serif"] if n in have), None)
+        if not mpl_font or mpl_font == "DejaVu Sans":
+            raise RuntimeError("图表找不到中文字体")
+        qt = set(QFontDatabase.families())
+        qt_font = next((n for n in ("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB")
+                        if n in qt), None)
+        if not qt_font:
+            raise RuntimeError("界面找不到中文字体")
+        return f"图表 {mpl_font}，界面 {qt_font}"
+    check("中文字体", cjk_fonts)
+
     def ica_methods():
         import numpy as np
         from .core import single
