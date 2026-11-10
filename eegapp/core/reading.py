@@ -8,11 +8,11 @@ import numpy as np
 # 文件对话框里列出的格式（MNE 的 read_raw 能自动识别）
 RAW_FILE_FILTER = (
     "脑电文件 (*.edf *.bdf *.gdf *.vhdr *.set *.cnt *.fif *.fif.gz *.mff *.eeg *.vmrk "
-    "*.data *.nxe *.lay *.dat *.snirf *.xdf *.mef *.edf+ *.bdf+);;所有文件 (*)"
+    "*.data *.nxe *.lay *.dat *.snirf *.mef *.edf+ *.bdf+);;所有文件 (*)"
 )
 # 扫描文件夹时认作脑电数据的扩展名
 RAW_EXTS = (".edf", ".bdf", ".gdf", ".vhdr", ".set", ".cnt", ".fif", ".fif.gz", ".mff", ".nxe", ".lay",
-            ".snirf", ".xdf", ".edf+", ".bdf+")
+            ".snirf", ".mef", ".edf+", ".bdf+")
 
 
 def parse_event_map(text):

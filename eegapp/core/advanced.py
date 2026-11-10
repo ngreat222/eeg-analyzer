@@ -239,11 +239,35 @@ def model_rdm(kind, n, path=None):
     raise ValueError(kind)
 
 
+RDM_METHODS = {"相关距离（1 − r）": "correlation", "欧氏距离": "euclidean", "平均振幅差": "amplitude"}
+
+
+def _euclid_rdms(cd, time_win, time_step):
+    """欧氏距离 RDM（NeuroRA 2.0 去掉了这个选项）：各条件先平均试次，每个时间窗把通道×时间展开成向量。
+
+    输出与 eegRDM 相同：[被试, 时间窗, 条件, 条件]。
+    """
+    from scipy.spatial.distance import pdist, squareform
+    m = cd.mean(axis=2)                      # [条件, 被试, 通道, 时间]
+    n_ts = m.shape[-1]
+    n_w = int((n_ts - time_win) / time_step) + 1
+    out = np.zeros((m.shape[1], n_w, m.shape[0], m.shape[0]))
+    for s in range(m.shape[1]):
+        for w in range(n_w):
+            x = m[:, s, :, w * time_step: w * time_step + time_win].reshape(m.shape[0], -1)
+            out[s, w] = squareform(pdist(x, "euclidean"))
+    return out
+
+
 def rsa(dd, model, time_win, time_step, method="correlation"):
     from neurora.corr_cal_by_rdm import rdms_corr
     from neurora.rdm_cal import eegRDM
+    method = RDM_METHODS.get(method, method)
     cd, n_min = condition_data(dd)
-    rdms = eegRDM(cd, chl_opt=0, time_opt=1, time_win=time_win, time_step=time_step, method=method)
+    if method == "euclidean":
+        rdms = _euclid_rdms(cd, time_win, time_step)
+    else:
+        rdms = eegRDM(cd, chl_opt=0, time_opt=1, time_win=time_win, time_step=time_step, method=method)
     sims = rdms_corr(np.asarray(model)[None], rdms)  # [被试, 时间窗, 模型, (r, p)]
     r = np.asarray(sims)[..., 0, 0]
     return rdms, r, n_min

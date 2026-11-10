@@ -54,6 +54,82 @@ def run(out_path):
         df = ev.merge(df, ev.fixed_interval(0, 6, 2, "片段"))
         return " ".join(f"{n}×{c}" for n, c, _ in ev.summary(df))
     check("事件工具（表格导入、改名、固定间隔）", event_tools)
+
+    # ---- 界面里每个可选项都实际跑一遍，防止“选项能选、运行时缺组件”
+    def optional_packages():
+        import importlib
+        need = ["picard", "sklearn", "mffpy", "pymatreader", "curryreader", "antio", "pymef", "h5py", "edfio",
+                "eeglabio", "pybv", "openpyxl", "xlrd", "pingouin", "neurora", "inverted_encoding", "mne_qt_browser"]
+        missing = []
+        for m in need:
+            try:
+                importlib.import_module(m)
+            except Exception as e:  # noqa: BLE001
+                missing.append(f"{m}（{type(e).__name__}）")
+        if missing:
+            raise RuntimeError("缺少：" + "，".join(missing))
+        return f"{len(need)} 个"
+    check("可选组件都已打包", optional_packages)
+
+    def ica_methods():
+        import numpy as np
+        from .core import single
+        rng = np.random.default_rng(0)
+        info = mne.create_info([f"EEG{i}" for i in range(8)], 100.0, "eeg")
+        raw = mne.io.RawArray(rng.laplace(size=(8, 3000)) * 1e-5, info, verbose=False)
+        out = []
+        for m in ("fastica", "infomax", "picard"):
+            ica, _ = single.fit_ica(raw, 5, m, 1.0, 97, log=quiet)
+            out.append(f"{m} {ica.n_components_}")
+        return ", ".join(out)
+    check("ICA 三种算法", ica_methods)
+
+    def file_formats():
+        import numpy as np
+        import pandas as pd
+        from .core import events as ev, reading
+        rng = np.random.default_rng(1)
+        info = mne.create_info(["Fz", "Cz", "Pz"], 128.0, "eeg")
+        raw = mne.io.RawArray(rng.normal(size=(3, 1280)) * 1e-5, info, verbose=False)
+        raw.set_annotations(mne.Annotations([1.0, 3.0], [0, 0], ["a", "b"]))
+        d = os.path.join(tmp, "fmt")
+        os.makedirs(d, exist_ok=True)
+        ok = []
+        for ext in ("edf", "vhdr", "set", "fif"):
+            f = os.path.join(d, f"t_raw.{ext}" if ext == "fif" else f"t.{ext}")
+            if ext == "fif":
+                raw.save(f, overwrite=True, verbose=False)
+            else:
+                mne.export.export_raw(f, raw, overwrite=True, verbose=False)
+            r, _ = reading.read_raw_any(f, log=quiet)
+            ok.append(f"{ext}:{len(ev.from_raw(r))}")
+        tab = pd.DataFrame({"time": [1.0, 2.0], "code": [1, 2]})
+        for ext in ("xlsx", "csv", "txt"):
+            f = os.path.join(d, f"ev.{ext}")
+            if ext == "xlsx":
+                tab.to_excel(f, index=False)
+            else:
+                tab.to_csv(f, index=False, sep="," if ext == "csv" else "\t")
+            df = ev.table_to_events(ev.read_table(f), ev.guess_columns(ev.read_table(f)), 128, rec_duration=10)
+            ok.append(f"{ext}:{len(df)}")
+        return " ".join(ok)
+    check("文件格式读写（EDF/BrainVision/EEGLAB/FIF，事件表 xlsx/csv/txt）", file_formats)
+
+    def all_tests():
+        import numpy as np
+        from .core import stats
+        rng = np.random.default_rng(2)
+        mk = lambda k: [rng.normal(i * 0.3, 1, (12, 20)) for i in range(k)]  # noqa: E731
+        n = 0
+        for level in ("group", "trial"):
+            for k, conds in ((1, mk(1)), (2, mk(2)), (4, mk(4))):
+                for t in stats.tests_for(k, level):
+                    for c in stats.CORRECTIONS:
+                        fl = (2, 2) if "两因素" in t else None
+                        stats.run_time_test(conds, t, c, n_iter=50, factor_levels=fl, log=quiet)
+                        n += 1
+        return f"{n} 种组合"
+    check("所有统计检验 × 多重比较校正", all_tests)
     check("标准电极模板", lambda: len(mne.channels.make_standard_montage("standard_1020").ch_names))
 
     def demo():
@@ -81,6 +157,17 @@ def run(out_path):
         st["res"] = r
         return " / ".join(out)
     check("解码、跨时间泛化、IEM、RSA", dec)
+
+    def rsa_options():
+        from .core import advanced
+        out = []
+        dd = analysis.decoding_data(st["p"], analysis.GROUP, "朝向", [str(i * 45) for i in range(8)], log=quiet)
+        for kind in ("环形距离（如朝向、位置）", "线性距离", "类别是否相同（0/1）"):
+            for dist in advanced.RDM_METHODS:
+                r = analysis.rsa(dd, kind, "", 20, 20, distance=dist, n_iter=20, log=quiet)
+                out.append(r.metrics[0][1])
+        return f"{len(out)} 种组合"
+    check("RSA 模型 × 距离", rsa_options)
 
     def ui():
         from .ui import main_window

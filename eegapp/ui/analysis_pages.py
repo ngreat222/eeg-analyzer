@@ -3,7 +3,7 @@ import os
 
 from PySide6.QtWidgets import QFileDialog
 
-from ..core import analysis, stats
+from ..core import advanced, analysis, stats
 from ..core.analysis import GROUP
 from ..core.single import parse_floats
 from .base import BasePage, label_values, refresh_scope, scope_combo
@@ -257,7 +257,7 @@ class RSAPage(_LabelPage):
         s.widget(btn("选择模型文件…", self._pick, "ghost", "mdi6.folder-open-outline"))
         self.win = s.row("时间窗（采样点）", ispin(5, 1, 500))
         self.step = s.row("步长（采样点）", ispin(5, 1, 500))
-        self.dist = s.row("RDM 距离", combo(["correlation", "euclidean", "mahalanobis"]))
+        self.dist = s.row("RDM 距离", combo(list(advanced.RDM_METHODS)))
         self._stats_section()
         self.end_side()
         self.action_row(btn("运行 RSA", self.go, "primary", "mdi6.play"))

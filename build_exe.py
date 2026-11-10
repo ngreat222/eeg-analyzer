@@ -30,7 +30,8 @@ EXCLUDES = [
 ]
 
 COLLECT_ALL = ["mne", "mne_qt_browser", "qtawesome", "neurora", "inverted_encoding", "pyqtgraph", "edfio",
-               "eeglabio", "pybv", "h5io", "lazy_loader"]
+               "eeglabio", "pybv", "h5io", "lazy_loader", "picard", "mffpy", "pymatreader", "curryreader", "antio",
+               "pymef", "openpyxl", "xlrd", "xmltodict"]
 HIDDEN = ["sklearn.svm", "sklearn.model_selection", "sklearn.decomposition", "sklearn.preprocessing",
           "sklearn.utils._typedefs", "sklearn.neighbors._partition_nodes", "scipy.io.matlab",
           "scipy.special.cython_special", "h5py", "skimage.measure", "pingouin", "qtpy",

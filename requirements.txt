@@ -15,3 +15,12 @@ inverted_encoding==0.2.3
 qtawesome==1.4.2
 pandas
 pyinstaller==6.22.3
+antio==0.7.1
+curryreader==0.1.2
+mffpy==0.11.0
+openpyxl==3.1.5
+pingouin==0.7.0
+pymatreader==1.3.2
+pymef==1.4.8
+python-picard==0.8.2
+xlrd==1.2.0
