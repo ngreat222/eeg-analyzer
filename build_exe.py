@@ -56,6 +56,21 @@ def _app_running():
     return f"{NAME}.exe" in out
 
 
+def check_windows_icu(dist):
+    """Qt 使用 Windows 自带的无后缀 ICU API；部分工具链会混入另一套同名 DLL。"""
+    from pathlib import Path
+    import pefile
+    dll = Path(dist) / "_internal" / "icuuc.dll"
+    if not dll.exists():
+        return
+    with pefile.PE(str(dll), fast_load=True) as pe:
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"]])
+        exports = {sym.name for sym in pe.DIRECTORY_ENTRY_EXPORT.symbols}
+    if b"ucnv_open" not in exports:
+        dll.unlink()
+        print("移除与 Qt 不兼容的构建环境 ICU，使用 Windows 系统 ICU。")
+
+
 def main():
     if _app_running():
         print(f"{NAME} 正在运行，请先关闭它再打包（否则旧文件被占用，打包会失败）。")
@@ -88,6 +103,8 @@ def main():
     PyInstaller.__main__.run(args)
 
     out = os.path.join(DIST, NAME)
+    if os.name == "nt":
+        check_windows_icu(out)
     for f in ("使用说明.md",):
         src = os.path.join(HERE, f)
         if os.path.exists(src):
@@ -141,6 +158,7 @@ def make_installer(dist=None):
     sys.path.insert(0, HERE)
     from eegapp import __version__
     dist = dist or os.path.join(DIST, NAME)
+    check_windows_icu(dist)
     iscc = next((p for p in ISCC if p and os.path.exists(p)), None)
     if not iscc:
         print("没找到 Inno Setup 的 ISCC.exe，跳过安装包。可以从 https://jrsoftware.org 安装后再运行。")
