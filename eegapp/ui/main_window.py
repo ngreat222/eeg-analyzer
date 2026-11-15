@@ -123,7 +123,7 @@ class MainWindow(QMainWindow):
         head.setContentsMargins(6, 0, 0, 0)
         head.setSpacing(8)
         logo = QLabel()
-        logo.setPixmap(icon("mdi6.head-snowflake-outline", C["accent"]).pixmap(22, 22))
+        logo.setPixmap(self.windowIcon().pixmap(32, 32))
         head.addWidget(logo)
         head.addWidget(label("脑电分析", "Brand"))
         head.addStretch(1)
