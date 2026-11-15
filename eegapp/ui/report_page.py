@@ -6,7 +6,7 @@ from datetime import datetime
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QComboBox, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from ..theme import C
 from .base import BasePage
@@ -15,8 +15,8 @@ from .widgets import Card, EmptyState, btn, chip, fig_pixmap, fig_png_bytes, hbo
 
 
 class ReportPage(BasePage):
-    title = "报告"
-    subtitle = "每次运行的分析都会自动收在这里，导出后可直接放进组会汇报或论文附录"
+    title = "分析报告"
+    subtitle = "查看本次会话的分析结果，导出图表与数值。"
 
     def __init__(self, ctx):
         super().__init__(ctx, with_side=False)
@@ -54,15 +54,19 @@ class ReportPage(BasePage):
                     row.addWidget(chip(f"{m[0]}：{m[1]}", C["on_soft"], C["soft"]))
                 row.addStretch(1)
                 card.add(row)
-            thumbs = QHBoxLayout()
-            thumbs.setSpacing(10)
-            for t, f in res.figures[:4]:
-                lab = QLabel()
-                lab.setPixmap(fig_pixmap(f, 260))
-                lab.setToolTip(t)
-                thumbs.addWidget(lab)
-            thumbs.addStretch(1)
-            card.add(thumbs)
+            if res.figures:
+                picker = QComboBox()
+                for title, fig in res.figures:
+                    picker.addItem(title)
+                preview = QLabel()
+                preview.setAlignment(Qt.AlignCenter)
+                def display(index, figures=res.figures, target=preview):
+                    image = fig_pixmap(figures[index][1], 940)
+                    target.setPixmap(image.scaled(720, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                picker.currentIndexChanged.connect(display)
+                display(0)
+                card.add(picker)
+                card.add(preview)
             lay.addWidget(card)
         lay.addStretch(1)
         self.scroll.setWidget(w)
@@ -133,14 +137,15 @@ def export_report(out, project_name, items):
 <style>
 body{{margin:0;background:{C['bg']};color:{C['text']};font-family:"Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",sans-serif;}}
 main{{max-width:1080px;margin:0 auto;padding:32px 20px 60px}}
-h1{{font-size:26px;margin:0 0 4px}} .sub{{color:{C['text2']};margin:0 0 28px}}
-section{{background:{C['card']};border-radius:16px;padding:20px 24px;margin:0 0 20px}}
+h1{{font-size:32px;font-weight:550;margin:0 0 8px;color:{C['on_soft']}}} .sub{{color:{C['text2']};margin:0 0 28px}}
+section{{border:1px solid {C['line']};background:{C['card']};border-radius:18px;padding:20px 24px;margin:0 0 20px}}
 h2{{font-size:18px;margin:0}} .meta{{color:{C['muted']};font-size:12px;margin:4px 0 12px}}
 .chips span{{display:inline-block;background:{C['field']};color:{C['text2']};border-radius:10px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px}}
 .metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:12px 0}}
 .m{{background:{C['field']};border-radius:12px;padding:10px 14px}} .k{{color:{C['text2']};font-size:12px}}
 .v{{font-size:19px;font-weight:600;margin:2px 0}} .h{{color:{C['muted']};font-size:11px}}
 .note{{color:{C['warn']};font-size:13px}}
+@media print{{body{{background:white;color:black}} section,figure{{break-inside:avoid}}}}
 figure{{margin:14px 0}} img{{max-width:100%;border-radius:10px}} figcaption{{color:{C['text2']};font-size:12px;margin-top:4px}}
 table{{border-collapse:collapse;width:100%;font-size:13px;margin-top:10px}}
 th,td{{border-bottom:1px solid {C['line']};padding:6px 8px;text-align:left}} th{{color:{C['text2']}}}

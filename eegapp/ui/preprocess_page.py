@@ -1,6 +1,6 @@
 """预处理页：只处理连续数据（通道、滤波、坏导、重参考、ICA），不需要事件。
 
-左边选一条记录，中间是这条记录的步骤清单和检查结果，右边是设置。
+选择记录后显示处理概览，可进入对应的设置类别。
 处理结果是“干净的连续数据”，事件和分段在「事件与分段」页做。
 """
 import json
@@ -8,7 +8,7 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-                               QHeaderView, QListWidget, QInputDialog, QLineEdit, QListWidgetItem, QMessageBox, QTableWidget, QTableWidgetItem,
+                               QHeaderView, QMenu, QListWidget, QInputDialog, QLineEdit, QListWidgetItem, QMessageBox, QTableWidget, QTableWidgetItem, QWidget,
                                QVBoxLayout)
 
 from ..core import analysis, project as pj, quality, single
@@ -26,26 +26,21 @@ PRE_FIELDS = ("order", "montage", "reref", "reref_channels", "notch", "harmonics
 
 class PreprocessPage(BasePage):
     title = "预处理"
-    subtitle = "把连续数据整理干净：通道、滤波、坏导、ICA。这一步不需要事件"
+    subtitle = "检查连续记录，复核伪迹后生成干净数据。"
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        self.recs = side_list(210)
-        self.recs.currentRowChanged.connect(self._select)
-        row.addWidget(self.recs)
-        center = QVBoxLayout()
-        center.setSpacing(12)
-        self.steps = StepList("这条记录的处理步骤")
-        center.addWidget(self.steps)
-        self.view = ResultView(EmptyState(
-            "mdi6.tune-variant", "把数据整理干净",
-            "左边选一条记录，点「载入查看」检查通道、功率谱和电极位置；需要时拟合 ICA 挑出眼电成分。"
-            "设置满意后点「处理这条记录」，或者直接「批量处理全部」。"))
-        center.addWidget(self.view, 1)
-        row.addLayout(center, 1)
-        self.body.addLayout(row, 1)
+        self.recs = self.record_picker()
+        self.recs.currentIndexChanged.connect(self._select)
+        self.steps = StepList("处理流程")
+        self.steps.section_requested.connect(self.open_step)
+        overview = QWidget()
+        sheet = QVBoxLayout(overview)
+        sheet.setContentsMargins(1, 1, 1, 1)
+        sheet.addWidget(self.steps)
+        sheet.addStretch()
+        self.view = ResultView(overview)
+        self.body.addWidget(self.view, 1)
         self.raw = self.ica = self.raw_ica = None
         self._sig = None          # 当前载入的数据对应的设置；设置变了就重新读
         self._non_eeg_hint = {}   # 记录 id → {通道: 原因}
@@ -65,7 +60,7 @@ class PreprocessPage(BasePage):
         self.segment_limit = s.row("自动坏段峰峰阈值", fspin(150, 1, 10000, 10, 1, " µV"))
         s.widget(btn("手动编辑坏段…", lambda: self.review_quality("manual")))
         s.widget(btn("自动检测并复核坏段…", lambda: self.review_quality("detect")))
-        s.widget(btn("DeepSeek 质控助手…", lambda: self.review_quality("ai")))
+        s.widget(btn("与 AI 助手讨论质量…", lambda: self.review_quality("ai")))
         s = self.section("滤波")
         self.notch = s.row("陷波", fspin(50, 0, 1000, 10, 1, " Hz"))
         self.harm = s.widget(checkbox("同时去除谐波"))
@@ -88,13 +83,26 @@ class PreprocessPage(BasePage):
         self.ica_auto = s.widget(checkbox("自动识别眼电成分", True))
         s.widget(label("没有眼电通道时，用 Fp1、Fp2 等前额电极代替。", "Muted", wrap=True))
         self.excl = s.row("去除成分", line("", "留空 = 用自动识别的结果"))
+        s.widget(btn("让视觉模型看 ICA 成分图…", self.discuss_ica))
         self.end_side()
 
-        self.action_row(btn("载入查看", self.preview, None, "mdi6.eye-outline"),
-                        btn("波形", self.browse, None, "mdi6.waveform"),
-                        btn("ICA", self.fit_ica, None, "mdi6.atom"))
-        self.action_row(btn("处理这条记录", self.process_one, "primary", "mdi6.check"),
-                        btn("批量处理全部", self.process_all, None, "mdi6.lightning-bolt-outline"))
+        more = btn("更多操作", None, None, "mdi6.dots-horizontal")
+        menu = QMenu(more)
+        menu.addAction("记录概览", lambda: (self.show_settings(False), self.view.reset()))
+        menu.addAction("浏览波形", self.browse)
+        menu.addAction("拟合 ICA", self.fit_ica)
+        menu.addAction("用 AI 复核 ICA 成分图…", self.discuss_ica)
+        menu.addSeparator()
+        menu.addAction("批量处理全部记录", self.process_all)
+        more.setMenu(menu)
+        self.action_row(more, btn("载入查看", self.preview, None, "mdi6.eye-outline"),
+                        btn("处理这条记录", self.process_one, "primary", "mdi6.play"))
+
+    def open_step(self, name):
+        category = {"通道":"当前记录", "滤波":"滤波",
+                    "坏段":"预处理顺序与质量检查", "坏导":"坏导与参考", "ICA":"ICA 去伪迹"}
+        self.group_picker.setCurrentText(category[name])
+        self.show_settings(True)
 
     # ------------------------------------------------------------ 设置 <-> 界面
     def _load_pipe(self):
@@ -127,9 +135,12 @@ class PreprocessPage(BasePage):
             s.locs = self.locs.text().strip()
             s.rename_from_locs = self.rename.isChecked()
             ex = self.excl.text().strip()
+            values = [] if ex in ("", "无") else [int(x) for x in parse_floats(ex)]
+            if not ex or values != r.ica_exclude:
+                r.reviewed_ica = ""
             r.ica_manual = bool(ex)
             if ex:
-                r.ica_exclude = [int(x) for x in parse_floats(ex)]
+                r.ica_exclude = values
         self.project.save()
 
     def _signature(self, s, r):
@@ -141,11 +152,11 @@ class PreprocessPage(BasePage):
 
     # ------------------------------------------------------------ 显示
     def _current(self):
-        it = self.recs.currentItem()
-        if it is None or self.project is None:
+        rid = self.recs.currentData()
+        if rid is None or self.project is None:
             return None
         try:
-            return self.project.get_rec(it.data(Qt.UserRole))
+            return self.project.get_rec(rid)
         except KeyError:
             return None
 
@@ -153,29 +164,28 @@ class PreprocessPage(BasePage):
         super().on_show()
         p = self.project
         self.recs.blockSignals(True)
-        cur = subject or (self.recs.currentItem().data(Qt.UserRole) if self.recs.currentItem() else None)
+        cur = subject or self.recs.currentData()
         self.recs.clear()
         if p is not None:
             self._load_pipe()
             for s, r in p.recordings():
-                done = r.status == pj.REC_DONE
-                it = QListWidgetItem(icon("mdi6.check-circle-outline" if done else "mdi6.circle-outline",
-                                          C["ok"] if done else C["muted"]),
-                                     f"{s.name}" + (f"  ·  {r.condition}" if r.condition else ""))
-                it.setData(Qt.UserRole, r.id)
-                it.setToolTip(r.source)
-                self.recs.addItem(it)
-                if r.id == cur or (cur and s.name == cur and self.recs.currentRow() < 0):
-                    self.recs.setCurrentItem(it)
-            if self.recs.currentRow() < 0 and self.recs.count():
-                self.recs.setCurrentRow(0)
+                name = f"{s.name} · {r.condition}" if r.condition else s.name
+                self.recs.addItem(name, r.id)
+                index = self.recs.count() - 1
+                self.recs.setItemData(index, r.source, Qt.ToolTipRole)
+            index = self.recs.findData(cur) if cur else -1
+            if index < 0 and subject:
+                index = next((i for i, (subj, _) in enumerate(p.recordings()) if subj.name == subject), -1)
+            self.recs.setCurrentIndex(max(0, index) if self.recs.count() else -1)
         self.recs.blockSignals(False)
         self._select()
 
     def _select(self, *_):
         cur = self._current()
         if cur is None:
+            self.view.reset()
             self.cur.setText("—")
+            self.steps.status.clear()
             self.steps.set([("off", "提示", "项目里还没有原始数据。到「项目」页导入文件或文件夹。", "")])
             return
         s, r = cur
@@ -183,7 +193,7 @@ class PreprocessPage(BasePage):
         self.bads.setText(", ".join(r.bads))
         self.locs.setText(s.locs)
         self.rename.setChecked(s.rename_from_locs)
-        self.excl.setText(", ".join(map(str, r.ica_exclude)) if r.ica_manual else "")
+        self.excl.setText((", ".join(map(str, r.ica_exclude)) or "无") if r.ica_manual else "")
         self.excl.setPlaceholderText("留空 = 用自动识别的结果")
         if self._sig is None or json.loads(self._sig)[0] != r.id:
             self.raw = self.ica = self.raw_ica = None
@@ -207,6 +217,7 @@ class PreprocessPage(BasePage):
         s, r = cur
         p = self.project.pipeline
         done = r.status == pj.REC_DONE
+        self.steps.status.setText("已处理" if done else "待处理")
         loaded = self.raw is not None
         hint = self._non_eeg_hint.get(r.id)
         if r.non_eeg is not None:
@@ -214,10 +225,10 @@ class PreprocessPage(BasePage):
         elif hint is not None:
             ch = ("wait", f"自动识别出 {len(hint)} 个非脑电通道", "待确认")
         else:
-            ch = ("todo", "载入后自动识别非脑电通道（时间戳、电量、接触质量等）", "")
+            ch = ("todo", "等待载入并识别通道", "")
         bads = ("done" if r.bads else "todo",
                 ("坏导 " + ", ".join(r.bads) + ("，插值" if p.interpolate else "，只标记")) if r.bads
-                else "没有标记坏导。可以点「自动检测坏导」", "已标记" if r.bads else "")
+                else "尚未标记坏导", "已标记" if r.bads else "")
         if not p.ica:
             ica = ("off", "不做 ICA", "")
         elif r.ica_manual:
@@ -225,11 +236,11 @@ class PreprocessPage(BasePage):
         elif done:
             ica = ("done", f"自动去除成分 {', '.join(map(str, r.ica_exclude)) or '无'}", "")
         else:
-            ica = ("todo", "处理时拟合 ICA，自动识别眼电成分；也可以先点「ICA」检查", "")
+            ica = ("todo", "处理时拟合，自动识别眼电成分", "")
         self.steps.set([
             (ch[0], "通道", ch[1], ch[2]),
             ("done" if r.bad_segments else "todo", "坏段", f"已标记 {len(r.bad_segments)} 个质控区间", ""),
-            ("done" if done or loaded else "todo", "执行顺序", " → ".join(p.order), ""),
+            ("done" if done or loaded else "todo", "滤波", " → ".join(p.order), ""),
             (bads[0], "坏导", bads[1], bads[2]),
             (ica[0], "ICA", ica[1], ica[2]),
             ("done" if done else "todo", "保存", "已保存干净的连续数据，可以去「事件与分段」" if done
@@ -290,21 +301,7 @@ class PreprocessPage(BasePage):
         def done(result):
             duration, candidates, summary = result
             if mode == "ai":
-                detail = json.dumps(summary, ensure_ascii=False, indent=2)
-                box = QMessageBox(self)
-                box.setWindowTitle("DeepSeek 质控助手")
-                box.setText("向 DeepSeek 发送本次质量摘要？可展开详细信息查看全部指标和候选区间。")
-                box.setDetailedText(detail)
-                box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-                if box.exec() != QMessageBox.Yes:
-                    return
-                key = os.environ.get("DEEPSEEK_API_KEY")
-                if not key:
-                    key, ok = QInputDialog.getText(self, "DeepSeek", "本次使用的 API Key", QLineEdit.Password)
-                    if not ok or not key.strip():
-                        return
-                self.run("DeepSeek 质控复核", lambda: quality.advise(summary, key.strip()),
-                         lambda msg: QMessageBox.information(self, "DeepSeek 复核建议", msg))
+                self.ctx.discuss_quality(summary)
                 return
             rows = list(rec.bad_segments)
             rows.extend(row for row in candidates if row not in rows)
@@ -442,7 +439,7 @@ class PreprocessPage(BasePage):
             if sug:
                 res.table = (["通道", "原因"], [[k, v] for k, v in sug.items()])
                 res.table_title = "建议标为坏导"
-                res.notes = ["已把建议填进右边的“坏导”，可以删改；在「波形」里也可以逐个确认。"]
+                res.notes = ["建议已填入「参数设置 → 坏导与参考」，可编辑或打开波形逐个确认。"]
                 self.bads.setText(", ".join(dict.fromkeys([*parse_names(self.bads.text()), *sug])))
             else:
                 res.notes = ["没有发现明显的坏导。"]
@@ -497,6 +494,8 @@ class PreprocessPage(BasePage):
         pipe = self.project.pipeline
         sig = self._signature(s, r)
         reuse = self.raw if (self.raw is not None and self._sig == sig) else None
+        fit_settings = self.fit_controls()
+        fit_project = self.project
 
         def work():
             raw = reuse
@@ -506,22 +505,34 @@ class PreprocessPage(BasePage):
             ica, raw_ica = pj.fit_ica(raw, pipe, log=log)
             sug = pj.auto_exclude(ica, raw, pipe, log=log)
             res = analysis.Result("预处理", f"{r.id} · ICA 成分")
-            figs = ica.plot_components(show=False)
-            figs = figs if isinstance(figs, list) else [figs]
-            for i, f in enumerate(figs):
-                res.figures.append((f"成分地形图 {i + 1}", f))
-            if sug:
-                for i, f in enumerate(ica.plot_properties(raw, picks=sug[:3], show=False)):
-                    res.figures.append((f"成分 {sug[i]} 属性", f))
-                res.figures.append(("去除前后对比", ica.plot_overlay(raw_ica, exclude=sug, show=False)))
+            try:
+                figs = ica.plot_components(show=False)
+                figs = figs if isinstance(figs, list) else [figs]
+                for i, f in enumerate(figs):
+                    res.figures.append((f"成分地形图 {i + 1}", f))
+                if sug:
+                    for i, f in enumerate(ica.plot_properties(raw, picks=sug[:3], show=False)):
+                        res.figures.append((f"成分 {sug[i]} 属性", f))
+                    res.figures.append(("去除前后对比", ica.plot_overlay(raw_ica, exclude=sug, show=False)))
+            except (ValueError, RuntimeError) as exc:
+                log(f"部分 ICA 图不可用：{exc}")
             res.metrics = [("成分数", str(ica.n_components_), pipe.ica_method),
                            ("建议去除", ", ".join(map(str, sug)) or "未识别到", "和眼电（或前额电极）相关的成分"),
                            ("怎么改", "填到“去除成分”", "或在成分波形里点击成分名")]
             return raw, ica, raw_ica, sug, res
 
         def done(out):
+            cur = self._current()
+            if (self.project is not fit_project or not cur or self._signature(*cur) != sig
+                    or self.fit_controls() != fit_settings):
+                log("拟合期间记录或设置已变化，请重新拟合。")
+                return
             self.raw, self.ica, self.raw_ica, sug, res = out
             self._sig = sig
+            self.ai_fit_new(sug)
+            if r.reviewed_ica and r.reviewed_ica != pj.ica_identity(self.ica):
+                self.excl.clear()
+                log("当前 ICA 与先前复核的分解不同，原有成分编号需重新确认。")
             if sug:
                 self.excl.setPlaceholderText(f"留空 = 自动：{', '.join(map(str, sug))}")
             self.view.show_result(res)
@@ -529,12 +540,69 @@ class PreprocessPage(BasePage):
             try:
                 b = self.ica.plot_sources(self.raw_ica, block=False, show=True, theme=theme.BROWSER,
                                           title=f"{r.id} ICA 成分：点击成分名标记去除")
-                self.ctx.keep_window(b, lambda: self.excl.setText(", ".join(map(str, self.ica.exclude)))
-                                     if self.ica.exclude else None)
+                fitted = self.ica
+                self.ctx.keep_window(b, lambda: self.excl.setText(", ".join(map(str, fitted.exclude)))
+                                     if self.ica is fitted and fitted.exclude else None)
             except Exception as e:  # noqa: BLE001
                 log(f"成分波形浏览器未打开：{e}")
 
         self.run(f"{r.id} 拟合 ICA", work, done)
+
+    def fit_controls(self):
+        return (self.notch.value(),self.harm.isChecked(),self.lf.value(),self.hf.value(),self.rs.value(),
+                self.reref.currentText(),self.reref_ch.text(),self.interp.isChecked(),self.bads.text(),self.locs.text(),
+                self.montage.currentText(),self.rename.isChecked(),self.ica_n.text(),self.ica_m.currentText(),
+                self.ica_auto.isChecked(),self.ica_on.isChecked())
+
+    def ai_fit_new(self, suggested):
+        from uuid import uuid4
+        self.fit_token=uuid4().hex
+        self.fitted_ica=self.ica
+        self.fit_project=self.project
+        self.fit_settings=self.fit_controls()
+        self.fit_auto=list(suggested)
+
+    def check_fit(self,token):
+        cur=self._current()
+        if (not cur or self.ica is None or self.project is not getattr(self,"fit_project",None) or self.ica is not getattr(self,"fitted_ica",None)
+                or token!=getattr(self,"fit_token",None) or self.fit_settings!=self.fit_controls()
+                or self._sig!=self._signature(*cur)):
+            raise ValueError("这张图的 ICA 分解已失效。请在当前记录重新拟合 ICA，再生成成分图。")
+        return cur
+
+    def marked_components(self):
+        value=self.excl.text().strip()
+        return set(self.fit_auto if not value else [] if value=="无" else map(int,parse_floats(value)))
+
+    def discuss_ica(self):
+        try:
+            token=getattr(self,"fit_token",None)
+            subj,rec=self.check_fit(token)
+        except ValueError as exc:
+            QMessageBox.information(self,"ICA 视觉复核",str(exc))
+            return
+        total=self.ica.n_components_
+        selected,ok=QInputDialog.getText(self,"ICA 视觉复核",
+            f"成分编号 0–{total-1}，用逗号分隔，或输入“全部”",
+            text=", ".join(map(str,self.fit_auto)) or "0")
+        if not ok: return
+        try:
+            picks=list(range(total)) if selected.strip()=="全部" else list(dict.fromkeys(int(n.strip()) for n in selected.replace("，",",").split(",")))
+            if not picks or min(picks)<0 or max(picks)>=total: raise ValueError()
+        except ValueError:
+            QMessageBox.warning(self,"成分编号","请输入本次分解中的整数编号。")
+            return
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from ..core.ica_visual import evidence
+        folder=TemporaryDirectory(prefix="biap-ica-")
+        raw,ica=self.raw_ica,self.ica
+        def done(paths):
+            self.check_fit(token)
+            self.ctx.ai_action.setChecked(True)
+            panel=self.ctx.assistant
+            if panel: panel.add_ica_images(rec.id,token,picks,paths,folder,self.marked_components())
+        self.run("生成 ICA 成分复核图",lambda:evidence(raw,ica,picks,Path(folder.name)),done)
 
     def _after(self, msg):
         self.project.save()
@@ -549,7 +617,7 @@ class PreprocessPage(BasePage):
         proj = self.project
         use = self.raw is not None and self._sig == self._signature(s, r)
         raw = self.raw.copy() if use else None
-        ica = self.ica if use else None
+        ica = self.ica if use and getattr(self,"fit_settings",None)==self.fit_controls() else None
         if self.raw is not None and not use:
             log("设置或坏导在载入后改过，按新设置重新读取处理")
 

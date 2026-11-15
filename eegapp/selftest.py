@@ -187,9 +187,32 @@ def run(out_path):
     check("RSA 模型 × 距离", rsa_options)
 
     def ui():
+        from PySide6.QtCore import QSettings, Qt
+        from PySide6.QtWidgets import QLabel
+        from . import theme
         from .ui import main_window
         from .ui.report_page import export_report
-        w = main_window.MainWindow()
+        w = main_window.MainWindow(settings=QSettings(os.path.join(tmp, "ui.ini"), QSettings.IniFormat))
+        w.setAttribute(Qt.WA_DontShowOnScreen)
+        w.resize(1180, 740)
+        w.show()
+        w.goto("解码")
+        w.ai_action.setChecked(True)
+        w.assistant.edit.setPlainText("尚未发送的草稿")
+        w.assistant.say("你", "请查看解码步骤")
+        start_theme = theme.MODE
+        for expected in ("light" if start_theme == "dark" else "dark", start_theme):
+            w.toggle_theme()
+            for _ in range(4):
+                app.processEvents()
+            assert w.isVisible() and w.stack.currentWidget() is w.pages["解码"]
+            assert theme.MODE == expected and w.settings.value("theme") == expected
+            assert w.assistant.edit.toPlainText() == "尚未发送的草稿"
+            assert "请查看解码步骤" in w.assistant.chat.toPlainText()
+            for lab in w.findChildren(QLabel):
+                if lab.isVisible() and lab.wordWrap() and lab.text():
+                    assert lab.height() >= lab.heightForWidth(lab.width()), lab.text()
+        w.ai_action.setChecked(False)
         w.project = st["p"]  # 不经过 set_project，避免改写用户的“上次打开的项目”
         w.refresh()
         for name, _, _ in main_window.NAV:

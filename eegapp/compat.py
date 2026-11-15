@@ -27,10 +27,10 @@ def setup():
     from . import theme
     try:
         from PySide6.QtCore import QSettings
-        mode = os.environ.get("EEG_THEME") or QSettings("EEGAnalyzer", "EEGAnalyzer").value("theme", "dark")
+        mode = os.environ.get("EEG_THEME") or QSettings("EEGAnalyzer", "EEGAnalyzer").value("theme", "light")
         theme.use(str(mode))
     except Exception:  # noqa: BLE001
-        theme.use("dark")
+        theme.use("light")
     theme.apply_mpl()
 
     # inverted_encoding 0.2.3 仍调用已从新版 scipy 移除的 scipy.signal.gaussian

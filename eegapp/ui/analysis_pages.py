@@ -40,7 +40,8 @@ class _AnalysisPage(BasePage):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.view = ResultView(EmptyState(self.icon_name, self.empty_title, self.empty_body))
+        self.view = ResultView(EmptyState(self.icon_name, self.empty_title, self.empty_body,
+            [btn("选择分析参数", lambda: self.show_settings(True), None, "mdi6.tune-variant")]))
         self.body.addWidget(self.view, 1)
 
     def show_res(self, res):
@@ -54,7 +55,7 @@ class ERPPage(_AnalysisPage):
     subtitle = "叠加平均、条件比较、逐时间点统计、地形图，一次生成"
     icon_name = "mdi6.sine-wave"
     empty_title = "看看大脑对刺激的反应"
-    empty_body = "在右侧选好条件和通道，点「运行 ERP 分析」。选「全组」时以被试为单位做统计，选单个被试时以试次为单位。"
+    empty_body = "在参数设置中选好条件和通道，点「运行 ERP 分析」。选「全组」时以被试为单位做统计，选单个被试时以试次为单位。"
 
     def __init__(self, ctx):
         super().__init__(ctx)

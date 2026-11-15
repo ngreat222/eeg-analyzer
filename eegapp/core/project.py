@@ -78,8 +78,10 @@ class Recording:
     ica_exclude: list = field(default_factory=list)
     ica_manual: bool = False          # True = 排除成分由用户手动指定
     bad_segments: list = field(default_factory=list)  # 起止秒、来源
+    events_file: str = ""
     clean_file: str = ""
     note: str = ""
+    reviewed_ica: str = ""
 
     @property
     def label(self):
@@ -109,6 +111,8 @@ class Project:
         self.subjects = []
         self.pipeline = Pipeline()
         self._cache = {}
+        self.assistant_data = {}
+        self._saved_bytes = None
 
     # ------------------------------------------------------------ 保存与读取
     @property
@@ -130,16 +134,37 @@ class Project:
             d["recordings"] = [asdict(r) for r in s.recordings]
             subs.append(d)
         data = dict(name=self.name, pipeline=asdict(self.pipeline), subjects=subs, version=3)
-        tmp = self.json_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.json_path)
+        if self.assistant_data:
+            data["assistant_data"] = self.assistant_data
+        # 同一项目可以在两个窗口打开。提交清单前检查版本，避免旧窗口覆盖已采用的建议。
+        from pathlib import Path
+        from PySide6.QtCore import QLockFile, QSaveFile, QIODevice
+        path = Path(self.json_path)
+        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        lock = QLockFile(self.json_path + ".lock")
+        if not lock.tryLock(2000):
+            raise OSError("项目正在另一个窗口保存，请稍后重试")
+        try:
+            disk = path.read_bytes() if path.is_file() else None
+            if disk != self._saved_bytes and disk != payload:
+                if self._saved_bytes is not None and json.loads(self._saved_bytes) == data:
+                    return
+                raise ValueError("项目已在另一个窗口发生变化，请重新打开后再保存")
+            if disk != payload:
+                f = QSaveFile(self.json_path)
+                if not f.open(QIODevice.WriteOnly) or f.write(payload) != len(payload) or not f.commit():
+                    raise OSError(f.errorString())
+            self._saved_bytes = payload
+        finally:
+            lock.unlock()
 
     @classmethod
     def load(cls, folder):
         p = cls(folder)
-        with open(p.json_path, encoding="utf-8") as f:
-            data = json.load(f)
+        from pathlib import Path
+        p._saved_bytes = Path(p.json_path).read_bytes()
+        data = json.loads(p._saved_bytes)
+        p.assistant_data = data.get("assistant_data", {})
         p.name = data.get("name", p.name)
         p.pipeline = Pipeline(**{k: v for k, v in data.get("pipeline", {}).items()
                                  if k in Pipeline.__dataclass_fields__})
@@ -209,7 +234,7 @@ class Project:
 
     # ------------------------------------------------------------ 事件
     def events_path(self, rec):
-        return os.path.join(self.folder, "events", f"{rec.id}.csv")
+        return self.path(rec.events_file) if rec.events_file else os.path.join(self.folder, "events", f"{rec.id}.csv")
 
     def events(self, rec, log=print):
         """读取一条记录的事件表。第一次读取时，从数据自带的标记里取出来存好。"""
@@ -709,6 +734,14 @@ def drop_summary(epochs, top=5):
     return c.most_common(top)
 
 
+def ica_identity(ica):
+    import hashlib
+    import numpy as np
+    digest = hashlib.sha256(json.dumps(ica.ch_names, ensure_ascii=False).encode())
+    digest.update(np.round(ica.get_components(), 9).astype("<f8").tobytes())
+    return digest.hexdigest()
+
+
 def ica_n(pipe):
     t = (pipe.ica_n or "").strip()
     if not t:
@@ -756,6 +789,8 @@ def preprocess_recording(project, subj, rec, raw=None, ica=None, log=print):
     if pipe.ica:
         if ica is None:
             ica, _ = fit_ica(raw, pipe, log=log)
+        if rec.ica_manual and rec.reviewed_ica and ica_identity(ica) != rec.reviewed_ica:
+            raise ValueError("ICA 分解已改变，请重新查看成分图并确认去除成分。")
         exclude = rec.ica_exclude if rec.ica_manual else auto_exclude(ica, raw, pipe, log=log)
         rec.ica_exclude = [int(x) for x in exclude]
         if exclude:
@@ -838,6 +873,9 @@ def epoch_subject(project, subj, log=print):
             ks = [_key(r, n) for n in sel["description"]]
             events = np.c_[samp, np.zeros(len(samp), int), [code[k] for k in ks]]
             md = pd.DataFrame({"记录条件": r.condition or "—", "事件": sel["description"].values, "记录": r.id})
+            for col in sel.columns:
+                if col not in ev.COLS and col not in md:
+                    md[col] = sel[col].values
             bl = (pipe.bl0, pipe.bl1) if pipe.baseline else None
             ep = mne.Epochs(raw, events, {k: code[k] for k in dict.fromkeys(ks)}, tmin=pipe.tmin, tmax=pipe.tmax,
                             baseline=bl, reject=reject, reject_by_annotation=True, preload=True, metadata=md,

@@ -1,63 +1,29 @@
-"""界面主题：暖灰底色 + 陶土橙强调色，标题用衬线体（参考 Claude 桌面应用的观感）。有深色和亮色两套。
+"""BIAP 的明暗主题、组件样式及科学图表配色。
 
 启动时 compat.setup() 按用户设置调用 use("dark" / "light")；P、C、SERIES 原地更新，
-所以各模块 `from ..theme import C` 拿到的始终是当前主题的颜色。换主题后要重启软件才完全生效。
+所以各模块 `from ..theme import C` 拿到的始终是当前主题的颜色。主窗口在切换外观时同步刷新现有控件。
 """
 
 DARK = dict(
-    ink="#1a1918",          # 侧栏
-    base="#262624",         # 主区背景
-    raised="#2d2c2a",       # 卡片、图表底色
-    field="#30302e",        # 输入框
-    hover="#383734",
-    line="#3b3a36",         # 分隔线、边框
-    line2="#4a4944",
-    alt="#2a2927",          # 表格隔行
-    text="#f5f4ee",
-    text2="#c2c0b6",
-    muted="#8f8d86",
-    clay="#d97757",         # 强调色
-    clay_hi="#e0896b",
-    clay_soft="#3a2a23",
-    clay_text="#eba68c",
-    green="#8fbf7f",
-    yellow="#e3b664",
-    red="#e5735f",
-    danger_bg="#3a2622",
-    blue="#7aa6d6",
-    div_lo="#3f5d80",
-    div_hi="#9a4f39",
+    ink="#172019", base="#1c241b", raised="#273025", field="#2e372b", hover="#384333",
+    line="#3d4939", line2="#627058", alt="#2a3327", text="#f4f4e8", text2="#d2d8c7",
+    muted="#b0bba1", clay="#546d31", clay_hi="#657d3f", clay_soft="#37472e",
+    clay_text="#d0e5a4", green="#74cdb7", yellow="#efbf77", red="#ffada6",
+    danger_bg="#48323a", blue="#7ebdf1", div_lo="#426887", div_hi="#90644d",
     icon_hover="rgba(255,255,255,0.08)",
 )
 
 LIGHT = dict(
-    ink="#f0eee6",
-    base="#faf9f5",
-    raised="#ffffff",
-    field="#ffffff",
-    hover="#efede6",
-    line="#e6e3da",
-    line2="#d2cfc4",
-    alt="#f8f7f3",
-    text="#1f1e1d",
-    text2="#57554f",
-    muted="#8a8780",
-    clay="#c96442",
-    clay_hi="#b8573a",
-    clay_soft="#f6e4da",
-    clay_text="#a4482a",
-    green="#3f7d3a",
-    yellow="#a66b00",
-    red="#c2412d",
-    danger_bg="#fbe9e5",
-    blue="#3b6ea8",
-    div_lo="#9dbbdc",
-    div_hi="#e3a58c",
+    ink="#f4f6ed", base="#eff3e9", raised="#ffffff", field="#ffffff", hover="#e7ecdf",
+    line="#d5dccd", line2="#bcc5b1", alt="#f4f5ec", text="#20251d", text2="#414b3c",
+    muted="#596551", clay="#4a632d", clay_hi="#3a5123", clay_soft="#e3ebd3",
+    clay_text="#405627", green="#526a2c", yellow="#94600d", red="#ac403c",
+    danger_bg="#fcebea", blue="#337baa", div_lo="#bdd5e9", div_hi="#edc6a8",
     icon_hover="rgba(0,0,0,0.06)",
 )
 
-SERIES_DARK = ["#d97757", "#7aa6d6", "#8fbf7f", "#c39bd3", "#e3b664", "#5fb3ad", "#d98aa6", "#a8a497"]
-SERIES_LIGHT = ["#c96442", "#3b6ea8", "#4f8a3f", "#8e5bb0", "#b8860b", "#2f8f87", "#b8527a", "#6f6c63"]
+SERIES_DARK = ["#71ccda", "#efb477", "#97a8ff", "#94cf9b", "#eb98ba", "#c2a6e6"]
+SERIES_LIGHT = ["#146983", "#b85822", "#525ca5", "#327653", "#ac4775", "#77549b"]
 
 MODE = "dark"
 P = dict(DARK)
@@ -80,21 +46,25 @@ def use(mode):
         field_hover=P["hover"], line=P["line"], text=P["text"], text2=P["text2"], muted=P["muted"],
         accent=P["clay"], on_accent="#ffffff", soft=P["clay_soft"], on_soft=P["clay_text"],
         section=P["muted"], ok=P["green"], warn=P["yellow"], danger=P["red"], nav_icon=P["text2"],
-        log_bg=P["ink"], axis=P["line2"], sig=P["clay"], pos=P["yellow"], neg=P["blue"],
+        log_bg=P["raised"], axis=P["line2"], sig=P["clay"], pos=P["yellow"], neg=P["blue"],
         icon_hover=P["icon_hover"],
     )
     SERIES[:] = SERIES_LIGHT if MODE == "light" else SERIES_DARK
-    DIVERGING[:] = [P["blue"], P["div_lo"], C["card"], P["div_hi"], P["clay_hi"]]
+    DIVERGING[:] = [P["blue"], P["div_lo"], C["card"], P["div_hi"], SERIES[1]]
     BROWSER = MODE
     QSS = _qss()
 
 
-SERIF = '"Cambria", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun"'
+
 SANS = '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Helvetica Neue"'
 MONO = '"Consolas", "Menlo", "SF Mono", "Microsoft YaHei UI", "PingFang SC"'
 
 
 def _qss():
+    light = MODE == "light"
+    glass = "rgba(253,253,247,226)" if light else "rgba(39,48,37,235)"
+    rail = "rgba(251,253,247,235)" if light else "rgba(33,43,32,242)"
+    edge = "rgba(255,255,255,185)" if light else P["line2"]
     return f"""
     * {{ font-family: {SANS}; font-size: 13px; color: {C['text']}; }}
     QMainWindow, QWidget#Main {{ background: {C['bg']}; }}
@@ -136,13 +106,13 @@ def _qss():
     
     QFrame#Card {{ background: {C['card']}; border: 1px solid {C['line']}; border-radius: 12px; }}
     QFrame#Metric {{ background: {C['card']}; border: 1px solid {C['line']}; border-radius: 10px; }}
-    QLabel#H1 {{ font-family: {SERIF}; font-size: 23px; }}
+    QLabel#H1 {{ font-size: 25px; font-weight: 700; }}
     QLabel#H2 {{ font-size: 14px; font-weight: 600; }}
-    QLabel#Brand {{ font-family: {SERIF}; font-size: 18px; }}
+    QLabel#Brand {{ color: #f1f6fa; font-family: "Segoe UI", "Helvetica Neue"; font-size: 23px; font-weight: 700; }}
     QLabel#Sub {{ color: {C['text2']}; font-size: 12px; }}
     QLabel#Muted {{ color: {C['muted']}; font-size: 12px; }}
     QLabel#Caption {{ color: {C['muted']}; font-size: 11px; }}
-    QLabel#MetricValue {{ font-family: {SERIF}; font-size: 21px; }}
+    QLabel#MetricValue {{ font-size: 22px; font-weight: 600; }}
     
     QScrollArea {{ background: transparent; border: none; }}
     QScrollArea > QWidget > QWidget {{ background: transparent; }}
@@ -181,6 +151,49 @@ def _qss():
     QMenu::item:selected {{ background: {P['hover']}; }}
     QMessageBox, QDialog {{ background: {C['bg']}; }}
     QSplitter::handle {{ background: {C['line']}; }}
+    QWidget#Main {{ background: transparent; }}
+    QWidget#Rail {{ background: {rail}; border: 1px solid {edge}; border-radius: 22px; }}
+    QWidget#Rail QPushButton {{ color: {C['text2']}; border: none; border-radius: 12px; padding: 7px 10px; text-align: left; }}
+    QWidget#Rail QPushButton:hover {{ background: {P['hover']}; }}
+    QWidget#Rail QPushButton:checked {{ background: {P['hover']}; color: {C['text']}; font-weight: 600; }}
+    QWidget#Rail QPushButton#NewProject {{ color: #27311e; border-radius: 14px; background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #aad4a3,stop:0.54 #e7edb1,stop:1 #ffc87b); }}
+    QWidget#Rail QLabel#Brand {{ color: {C['text']}; }}
+    QWidget#Side, QFrame#Card, QFrame#Metric, QFrame#EmptySheet {{ background: {glass}; border: 1px solid {edge}; border-radius: 17px; }}
+    QLabel#EmptyIcon {{ background: {C['soft']}; border-radius: 12px; }}
+    QLabel#HeroTitle {{ font-size: 52px; font-weight: 400; color: {C['text']}; }}
+    QLabel#HeroProject {{ font-size: 49px; font-weight: 500; color: {"#4c632e" if light else "#cae1a3"}; }}
+    QLabel#HeroTitle[compact="true"], QLabel#HeroProject[compact="true"] {{ font-size: 33px; }}
+    QPushButton#JourneyNext {{ background: rgba(235,247,199,24); border: 1px solid rgba(228,239,210,54); border-radius: 13px; text-align: left; color: #f3f6e5; padding: 9px 13px; }}
+    QPushButton#JourneyNext:hover {{ background: rgba(235,247,199,42); }}
+    QWidget#Rail QPushButton[kind="sectionNav"] {{ text-align: left; padding: 8px 4px; background: transparent; font-weight: 600; color: {C['text2']}; }}
+    QWidget#Rail QPushButton[kind="sectionNav"]:hover {{ background: {P['hover']}; }}
+    QLabel#ProjectContext {{ color: {C['muted']}; font-size: 12px; }}
+    QLabel#WorkspaceTitle {{ font-size: 33px; font-weight: 500; color: {C['on_soft']}; }}
+    QFrame#SettingsSheet {{ background: {glass}; border: 1px solid {edge}; border-radius: 18px; }}
+    QFrame#StepLink {{ text-align: left; border: 1px solid transparent; border-bottom-color: {C['line']}; background: transparent; padding: 0; border-radius: 4px; }}
+    QFrame#StepLink:hover {{ background: {P['hover']}; }}
+    QFrame#StepLink:focus {{ border-color: {C['accent']}; }}
+    QFrame#ContextCard {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #536042,stop:1 #273521); border-radius: 16px; min-width: 104px; }}
+    QFrame#ContextCard QLabel {{ color: #ebf2d8; }}
+    QFrame#ContextCard QLabel#ContextValue {{ color: #fffef3; font-size: 23px; font-weight: 500; }}
+    QFrame#FlowHeader {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #34432a,stop:1 #4b5638); border-radius: 12px; }}
+    QFrame#FlowHeader QLabel {{ color: #f2f5e5; }}
+    QFrame#Journey {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #495236,stop:0.52 #303c29,stop:1 #202c1d); border: 1px solid #5b6749; border-radius: 22px; }}
+    QFrame#Journey QLabel {{ color: #e4ebd3; }}
+    QFrame#Journey QLabel#Percentage {{ color: #fcfdec; font-family: "Segoe UI", "Helvetica Neue"; font-size: 44px; font-weight: 400; }}
+    QFrame#Journey QProgressBar {{ background: #62704f; max-height: 4px; }}
+    QFrame#Journey QProgressBar::chunk {{ background: #c8e36d; }}
+    QFrame#SignalSummary {{ background: qlineargradient(x1:0.2,y1:0,x2:0.8,y2:1,stop:0 #a9d2ed,stop:0.49 #d3e7de,stop:1 #f7e7a5); border-radius: 19px; border: 1px solid #e3eccf; }}
+    QFrame#SignalSummary QLabel {{ color: #304032; }}
+    QFrame#SignalSummary QLabel#Readout {{ font-size: 27px; font-weight: 600; color: #202e21; }}
+    QToolBar {{ background: {C['bg']}; border: none; spacing: 5px; padding: 5px 12px 2px 12px; }}
+    QToolBar QToolButton {{ color: {C['text2']}; background: {C['card']}; padding: 5px 10px; border-radius: 12px; }}
+    QToolBar QToolButton:hover, QToolBar QToolButton:checked {{ color: {C['on_soft']}; background: {C['soft']}; }}
+    QHeaderView::section {{ background: {P['alt']}; color: {C['text2']}; }}
+    QTableView::item:selected, QListWidget::item:selected, QListWidget#SubList::item:selected {{ background: {C['soft']}; color: {C['on_soft']}; }}
+    QPushButton:focus, QToolButton:focus {{ border: 1px solid {C['accent']}; }}
+    QDockWidget::title {{ background: {C['card']}; color: {C['text']}; padding: 9px 12px; }}
+    QSplitter::handle:horizontal {{ width: 2px; }}
     """
 
 

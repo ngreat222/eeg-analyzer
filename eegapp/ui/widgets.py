@@ -3,7 +3,7 @@ import io
 
 import qtawesome as qta
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QLayout, QCheckBox, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
@@ -12,9 +12,14 @@ from PySide6.QtWidgets import (QLayout, QCheckBox, QDialog, QFileDialog, QFormLa
 from ..theme import C
 
 
+ICON_SPECS = {}
+
+
 def icon(name, color=None, color_on=None):
     kw = {"color_on": color_on} if color_on else {}
-    return qta.icon(name, color=color or C["text2"], **kw)
+    value = qta.icon(name, color=color or C["text2"], **kw)
+    ICON_SPECS[value.cacheKey()] = (name, color or C["text2"], color_on)
+    return value
 
 
 def btn(text, slot=None, kind=None, icon_name=None, tip=None):
@@ -33,8 +38,35 @@ def btn(text, slot=None, kind=None, icon_name=None, tip=None):
     return b
 
 
+class WrappedLabel(QLabel):
+    """Keep the height of a wrapping Qt label in sync with its actual layout width."""
+
+    def _fit_lines(self):
+        if self.wordWrap() and self.width() > 0:
+            needed = max(0, self.heightForWidth(self.width()))
+            if self.minimumHeight() != needed:
+                self.setMinimumHeight(needed)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_lines()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_lines()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._fit_lines()
+
+    def setText(self, text):
+        super().setText(text)
+        self._fit_lines()
+
+
 def label(text, obj=None, wrap=False, rich=False):
-    lab = QLabel(text)
+    lab = WrappedLabel(text) if wrap else QLabel(text)
     if obj:
         lab.setObjectName(obj)
     lab.setWordWrap(wrap)
@@ -56,7 +88,8 @@ def hbox(*ws, spacing=8, margins=(0, 0, 0, 0)):
     return h
 
 
-def chip(text, fg=C["on_soft"], bg=C["soft"], icon_name=None):
+def chip(text, fg=None, bg=None, icon_name=None):
+    fg, bg = fg or C["on_soft"], bg or C["soft"]
     lab = QLabel(text)
     lab.setTextFormat(Qt.PlainText)
     lab.setStyleSheet(f"background:{bg};color:{fg};border-radius:10px;padding:3px 10px;font-size:12px;")
@@ -329,26 +362,36 @@ def wrap_text(text, width=34):
     return "\n".join(x for x in lines if x)
 
 
-class EmptyState(QWidget):
+class EmptyState(QFrame):
     def __init__(self, icon_name, title, body, buttons=()):
         super().__init__()
-        lay = QVBoxLayout(self)
-        lay.addStretch(1)
+        self.setObjectName("EmptySheet")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 28)
+        layout.setSpacing(10)
+        layout.addStretch(1)
         ic = QLabel()
-        ic.setPixmap(icon(icon_name, C["accent"]).pixmap(64, 64))
+        ic.setObjectName("EmptyIcon")
+        ic.setFixedSize(54, 54)
+        ic.setProperty("themeGlyph", [icon_name, "on_soft", "28"])
+        ic.setPixmap(icon(icon_name, C["on_soft"]).pixmap(28, 28))
         ic.setAlignment(Qt.AlignCenter)
-        lay.addWidget(ic)
-        t = label(title, "H1")
-        t.setAlignment(Qt.AlignCenter)
-        lay.addWidget(t)
-        # 不用 Qt 的自动换行（居中对齐时高度会算少，文字被压扁），提前按字数断好行
-        b = label(wrap_text(body, 34), "Sub")
-        b.setAlignment(Qt.AlignCenter)
-        lay.addWidget(b)
+        layout.addWidget(ic, 0, Qt.AlignHCenter)
+        heading = label(title, "H2", wrap=True)
+        heading.setAlignment(Qt.AlignCenter)
+        layout.addWidget(heading)
+        description = label(body, "Sub", wrap=True)
+        description.setMaximumWidth(440)
+        description.setAlignment(Qt.AlignCenter)
+        text_row = QHBoxLayout()
+        text_row.addStretch()
+        text_row.addWidget(description, 10)
+        text_row.addStretch()
+        layout.addLayout(text_row)
         if buttons:
-            lay.addSpacing(10)
-            lay.addLayout(hbox("stretch", *buttons, "stretch"))
-        lay.addStretch(2)
+            layout.addSpacing(8)
+            layout.addLayout(hbox("stretch", *buttons, "stretch"))
+        layout.addStretch(2)
 
 
 class ResultView(QScrollArea):
@@ -366,7 +409,10 @@ class ResultView(QScrollArea):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(2, 2, 8, 12)
         lay.setSpacing(12)
-        lay.addWidget(label(res.title, "H1"))
+        lay.addWidget(label(res.title, "H2", wrap=True))
+        figures = list(res.figures)
+        if figures:
+            lay.addWidget(FigureCard(*figures.pop(0)))
         if res.params:
             chips = QWidget()
             fl = FlowLayout(chips)
@@ -381,7 +427,7 @@ class ResultView(QScrollArea):
             import html as _h
             lay.addWidget(label(f"<span style='color:{C['warn']}'>●</span>&nbsp; {_h.escape(n)}", "Sub", wrap=True,
                                 rich=True))
-        figs = res.figures
+        figs = figures
         i = 0
         while i < len(figs):
             t, f = figs[i]
@@ -465,22 +511,48 @@ STEP_ICONS = {"done": ("mdi6.check-circle-outline", "ok"), "todo": ("mdi6.circle
               "off": ("mdi6.minus-circle-outline", "muted")}
 
 
+class StepRow(QFrame):
+    def __init__(self, name, open_settings):
+        super().__init__()
+        self.setObjectName("StepLink")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(f"打开{name}设置")
+        self.action = btn("", lambda: open_settings(name), "ghost", "mdi6.chevron-right")
+        self.action.setAccessibleName(f"{name}设置")
+        self.action.setToolTip(self.toolTip())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.action.click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class StepList(QFrame):
     """一列步骤：状态图标、说明、右侧状态文字（像任务清单一样逐项打勾）。"""
+
+    section_requested = Signal(str)
 
     def __init__(self, title=None):
         super().__init__()
         self.setObjectName("Card")
         self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(16, 12, 16, 10)
-        self.lay.setSpacing(0)
-        if title:
-            t = label(title, "H2")
-            t.setContentsMargins(0, 0, 0, 6)
-            self.lay.addWidget(t)
+        self.lay.setContentsMargins(18, 16, 18, 16)
+        self.lay.setSpacing(8)
+        header = QFrame()
+        header.setObjectName("FlowHeader")
+        bar = QHBoxLayout(header)
+        bar.setContentsMargins(16, 10, 16, 10)
+        bar.addWidget(label(title, "H2"))
+        bar.addStretch()
+        self.status = label("", "Sub")
+        bar.addWidget(self.status)
+        self.lay.addWidget(header)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(0)
         self.lay.addLayout(self.rows)
+        self.lay.addStretch()
 
     def set(self, steps):
         """steps: [(状态, 名称, 说明, 右侧文字)]，状态取 done / todo / wait / warn / off。"""
@@ -491,16 +563,15 @@ class StepList(QFrame):
                 old.hide()
                 old.setParent(None)
                 old.deleteLater()
-        for i, (state, name, desc, right) in enumerate(steps):
-            w = QWidget()
-            if i:
-                w.setStyleSheet(f"QWidget#StepRow{{border-top:1px solid {C['line']};}}")
-            w.setObjectName("StepRow")
+        for state, name, desc, right in steps:
+            editable = name in {"通道", "坏段", "滤波", "坏导", "ICA"}
+            w = StepRow(name, self.section_requested.emit) if editable else QWidget()
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 7, 0, 7)
             h.setSpacing(10)
             ic_name, col = STEP_ICONS.get(state, STEP_ICONS["todo"])
             ic = QLabel()
+            ic.setProperty("themeGlyph", [ic_name, col, "17"])
             ic.setPixmap(icon(ic_name, C[col]).pixmap(17, 17))
             ic.setFixedWidth(20)
             h.addWidget(ic, 0, Qt.AlignTop)
@@ -514,6 +585,10 @@ class StepList(QFrame):
             r = label(right, "Muted")
             r.setStyleSheet(f"color:{C[col] if state in ('wait', 'warn') else C['muted']};font-size:12px;")
             h.addWidget(r, 0, Qt.AlignTop)
+            if editable:
+                h.addWidget(w.action)
+                for child in w.findChildren(QLabel):
+                    child.setAttribute(Qt.WA_TransparentForMouseEvents)
             self.rows.addWidget(w)
 
 

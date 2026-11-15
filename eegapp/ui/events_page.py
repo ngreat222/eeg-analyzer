@@ -26,11 +26,8 @@ class EventsPage(BasePage):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        self.recs = side_list(210)
-        self.recs.currentRowChanged.connect(self._select)
-        row.addWidget(self.recs)
+        self.recs = self.record_picker()
+        self.recs.currentIndexChanged.connect(self._select)
 
         sc = QScrollArea()
         sc.setWidgetResizable(True)
@@ -43,7 +40,7 @@ class EventsPage(BasePage):
         cl.addWidget(self.head)
         self.metrics = MetricGrid(3)
         cl.addWidget(self.metrics)
-        kinds = Card("事件种类", "选中一行或几行，可以在右边平移或删除；名字以 BAD_ 开头的表示坏段，分段时跳过")
+        kinds = Card("事件种类", "选中一行或几行，可在「参数设置 → 整理」中平移或删除；名字以 BAD_ 开头的表示坏段，分段时跳过")
         self.kinds = QTableWidget(0, 3)
         self.kinds.setHorizontalHeaderLabels(["事件", "个数", "第一次出现（秒）"])
         self.kinds.verticalHeader().setVisible(False)
@@ -55,13 +52,12 @@ class EventsPage(BasePage):
         cl.addWidget(kinds)
         self.fig_slot = QVBoxLayout()
         cl.addLayout(self.fig_slot)
-        self.empty = label("这条记录还没有事件。用右边“添加事件”里的任意一种方式添加；"
+        self.empty = label("这条记录还没有事件。到「参数设置 → 添加事件」选择添加方式；"
                            "只做静息态或频谱分析的话，也可以不加事件，分段方式选“固定长度”。", "Sub", wrap=True)
         cl.addWidget(self.empty)
         cl.addStretch(1)
         sc.setWidget(inner)
-        row.addWidget(sc, 1)
-        self.body.addLayout(row, 1)
+        self.body.addWidget(sc, 1)
         self._fig = None
         self._headers = {}
         self._last_table = None      # (示例数据, 示例表格, 导入方式)
@@ -149,36 +145,31 @@ class EventsPage(BasePage):
 
     # ------------------------------------------------------------ 显示
     def _current(self):
-        it = self.recs.currentItem()
-        if it is None or self.project is None:
+        rid = self.recs.currentData()
+        if rid is None or self.project is None:
             return None
         try:
-            return self.project.get_rec(it.data(Qt.UserRole))
+            return self.project.get_rec(rid)
         except KeyError:
             return None
 
     def on_show(self, subject=None):
         super().on_show()
         p = self.project
-        cur = subject or (self.recs.currentItem().data(Qt.UserRole) if self.recs.currentItem() else None)
+        cur = subject or self.recs.currentData()
         self.recs.blockSignals(True)
         self.recs.clear()
         if p is not None:
             self._load_pipe()
             for s, r in p.recordings():
-                path = p.events_path(r)
-                n = len(ev.load(path)) if os.path.exists(path) else None
-                it = QListWidgetItem(icon("mdi6.map-marker-check-outline" if n else "mdi6.map-marker-outline",
-                                          C["ok"] if n else C["muted"]),
-                                     f"{s.name}" + (f"  ·  {r.condition}" if r.condition else "")
-                                     + (f"  （{n}）" if n else ""))
-                it.setData(Qt.UserRole, r.id)
-                it.setToolTip(r.source)
-                self.recs.addItem(it)
-                if r.id == cur:
-                    self.recs.setCurrentItem(it)
-            if self.recs.currentRow() < 0 and self.recs.count():
-                self.recs.setCurrentRow(0)
+                name = f"{s.name} · {r.condition}" if r.condition else s.name
+                self.recs.addItem(name, r.id)
+                index = self.recs.count() - 1
+                self.recs.setItemData(index, r.source, Qt.ToolTipRole)
+            index = self.recs.findData(cur) if cur else -1
+            if index < 0 and subject:
+                index = next((i for i, (subj, _) in enumerate(p.recordings()) if subj.name == subject), -1)
+            self.recs.setCurrentIndex(max(0, index) if self.recs.count() else -1)
             self._refresh_event_choices()
         self.recs.blockSignals(False)
         self._select()

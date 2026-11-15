@@ -228,7 +228,8 @@ def hrow(*widgets):
 
 
 def note(text):
-    lab = QLabel(text)
+    from .widgets import WrappedLabel
+    lab = WrappedLabel(text)
     lab.setWordWrap(True)
     lab.setTextFormat(Qt.RichText)
     lab.setObjectName("Sub")

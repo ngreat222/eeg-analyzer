@@ -3,10 +3,10 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QAction, QTextCursor
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget,
-                               QVBoxLayout, QWidget)
+                               QVBoxLayout, QWidget, QSizePolicy, QScrollArea, QSplitter, QToolBar)
 
 from .. import APP_NAME, __version__
 from ..core import project as pj
@@ -18,6 +18,7 @@ from .events_page import EventsPage
 from .preprocess_page import PreprocessPage
 from .project_page import ProjectPage, ask_project_name
 from .report_page import ReportPage
+from .workspace_surface import WorkspaceCanvas
 from .widgets import btn, icon, label
 
 NAV = [("项目", "mdi6.folder-multiple-outline", ProjectPage),
@@ -28,7 +29,7 @@ NAV = [("项目", "mdi6.folder-multiple-outline", ProjectPage),
        ("解码", "mdi6.brain", DecodePage),
        ("RSA", "mdi6.dots-grid", RSAPage),
        ("报告", "mdi6.file-chart-outline", ReportPage)]
-NAV_TEXT = {"事件": "事件与分段"}
+NAV_TEXT = {"项目":"项目总览", "事件":"事件与分段", "ERP":"事件相关电位", "时频":"时频与频谱", "解码":"解码与反向编码", "RSA":"表征相似性", "报告":"分析报告"}
 NAV_GROUPS = {"项目": "数据", "ERP": "分析", "报告": "输出"}
 
 PROJECTS_ROOT = os.path.join(os.path.expanduser("~"), "Documents", "脑电分析项目")
@@ -48,7 +49,7 @@ def _check_qss():
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.resize(1520, 940)
@@ -58,7 +59,7 @@ class MainWindow(QMainWindow):
         self.reports = []
         self.runner = TaskRunner(self)
         self._windows = []
-        self.settings = QSettings("EEGAnalyzer", "EEGAnalyzer")
+        self.settings = settings if settings is not None else QSettings("EEGAnalyzer", "EEGAnalyzer")
 
         self.logw = QPlainTextEdit()
         self.logw.setReadOnly(True)
@@ -68,28 +69,64 @@ class MainWindow(QMainWindow):
                                 f"border-radius:0;font-family:{theme.MONO};font-size:12px;"
                                 f"color:{C['text2']};padding:8px 14px;}}")
         self.logw.hide()
-        central = QWidget()
+        central = WorkspaceCanvas()
         root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(12, 8, 12, 12)
         root.setSpacing(0)
         root.addWidget(self._rail())
         right = QWidget()
         right.setObjectName("Main")
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setContentsMargins(4, 0, 0, 0)
         rl.setSpacing(0)
         self.stack = QStackedWidget()
         rl.addWidget(self.stack, 1)
         rl.addWidget(self.logw)
         root.addWidget(right, 1)
-        self.setCentralWidget(central)
-
+        self.panels = QSplitter(Qt.Horizontal)
+        self.panels.setChildrenCollapsible(False)
+        self.work_area = QScrollArea()
+        self.work_area.setFrameShape(QScrollArea.NoFrame)
+        self.work_area.setWidgetResizable(True)
+        self.work_area.setWidget(central)
+        self.panels.addWidget(self.work_area)
+        self.setCentralWidget(self.panels)
+        self.assistant = None
+        self.project_sources = None
+        bar = QToolBar("视图",self)
+        bar.setMovable(False)
+        self.addToolBar(bar)
+        bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        bar.setIconSize(QSize(16,16))
+        self.location = label("BIAP 工作台", "Sub")
+        bar.addWidget(self.location)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar.addWidget(spacer)
+        work_action = bar.addAction(icon("mdi6.view-dashboard-outline", C["text2"]), "工作窗口")
+        work_action.setCheckable(True)
+        work_action.setChecked(True)
+        work_action.setShortcut("Ctrl+1")
+        work_action.setToolTip("显示或隐藏工作窗口（Ctrl+1）")
+        work_action.toggled.connect(self.work_area.setVisible)
+        self.ai_action = bar.addAction(icon("mdi6.message-text-outline", C["text2"]), "AI 助手")
+        self.ai_action.setCheckable(True)
+        self.ai_action.setShortcut("Ctrl+2")
+        self.ai_action.setToolTip("显示或隐藏 AI 助手（Ctrl+2）")
+        self.ai_action.toggled.connect(self.toggle_assistant)
+        self.sources_action = QAction("项目引用", self)
+        self.sources_action.setShortcut("Ctrl+3")
+        self.addAction(self.sources_action)
+        self.sources_action.setCheckable(True)
+        self.sources_action.toggled.connect(self.show_project_sources)
         self.pages = {}
         for name, _, cls in NAV:
             page = cls(self)
             self.pages[name] = page
             self.stack.addWidget(page)
 
+        from .project_bridge import analysis_values
+        self.analysis_defaults=analysis_values(self)
         self.status = QLabel("")
         self.status.setStyleSheet(f"color:{C['text2']};padding-left:8px;")
         self.progress = QProgressBar()
@@ -97,6 +134,7 @@ class MainWindow(QMainWindow):
         self.progress.setFixedWidth(160)
         self.progress.hide()
         self.statusBar().addWidget(self.status, 1)
+        self.statusBar().messageChanged.connect(lambda message: self.status.setVisible(not message))
         self.statusBar().addPermanentWidget(self.progress)
         self.statusBar().setSizeGripEnabled(False)
         LOG.message.connect(self._append_log)
@@ -112,10 +150,40 @@ class MainWindow(QMainWindow):
                 log(f"上次的项目打不开：{e}")
 
     # ------------------------------------------------------------ 导航
+    def show_project_sources(self, visible):
+        if visible:
+            self.ai_action.setChecked(True)
+        if self.assistant is not None:
+            self.assistant.show_library(visible)
+
+    def toggle_assistant(self, visible):
+        if visible and self.assistant is None:
+            try:
+                from .assistant_panel import Studio
+                self.assistant = Studio(host=self)
+            except Exception as exc:
+                self.ai_action.setChecked(False)
+                QMessageBox.warning(self,"打开 AI 助手",str(exc))
+                return
+            self.panels.addWidget(self.assistant)
+            self.panels.setSizes([max(500, self.width()-440),440])
+        if self.assistant is not None:
+            if not visible:
+                self.sources_action.setChecked(False)
+            self.assistant.setVisible(visible)
+            if visible:
+                self.assistant.edit.setFocus()
+
+    def discuss_quality(self, summary):
+        self.ai_action.setChecked(True)
+        if self.assistant is not None:
+            import json
+            self.assistant.edit.appendPlainText("帮我看看这条记录的质量摘要。\n"+json.dumps(summary,ensure_ascii=False,indent=2))
+
     def _rail(self):
         rail = QWidget()
         rail.setObjectName("Rail")
-        rail.setFixedWidth(212)
+        rail.setFixedWidth(180)
         lay = QVBoxLayout(rail)
         lay.setContentsMargins(12, 16, 12, 12)
         lay.setSpacing(2)
@@ -125,35 +193,55 @@ class MainWindow(QMainWindow):
         logo = QLabel()
         logo.setPixmap(self.windowIcon().pixmap(32, 32))
         head.addWidget(logo)
-        head.addWidget(label("脑电分析", "Brand"))
+        identity = QVBoxLayout()
+        identity.setSpacing(0)
+        identity.addWidget(label("BIAP", "Brand"))
+        identity.addWidget(label("脑电分析工作台", "Caption"))
+        head.addLayout(identity)
         head.addStretch(1)
         lay.addLayout(head)
         lay.addSpacing(14)
-        nb = btn("新建项目", self.new_project, None, "mdi6.plus")
-        nb.setStyleSheet("text-align:left;padding-left:10px;")
-        lay.addWidget(nb)
-        ob = btn("打开项目", self.open_project, "nav", "mdi6.folder-open-outline")
-        lay.addWidget(ob)
+        nb = self._rail_btn("新建项目", "mdi6.plus")
+        nb.clicked.connect(self.new_project)
+        nb.setIcon(icon("mdi6.plus","#344423"))
+        nb.setObjectName("NewProject")
+        ob = self._rail_btn("打开项目", "mdi6.folder-open-outline")
+        ob.clicked.connect(self.open_project)
+
         lay.addSpacing(10)
-        self.proj_name = label("未打开项目", "Sub")
+        self.proj_name = label("未打开项目", "Sub", wrap=True)
         self.proj_name.setContentsMargins(10, 0, 0, 0)
-        self.proj_name.setWordWrap(True)
         lay.addWidget(self.proj_name)
         self.nav = QButtonGroup(self)
         self.nav.setExclusive(True)
         self.nav_btns = {}
+        self.nav_sections = {}
+        self.nav_group_for = {}
         for i, (name, ic, _) in enumerate(NAV):
             if name in NAV_GROUPS:
-                cap = label(NAV_GROUPS[name], "Caption")
-                cap.setContentsMargins(10, 14, 0, 4)
-                lay.addWidget(cap)
+                group_name = NAV_GROUPS[name]
+                toggle = btn(group_name, None)
+                toggle.setProperty("kind", "sectionNav")
+                toggle.setCheckable(True)
+                toggle.clicked.connect(lambda enabled, group=group_name:
+                                       self.expand_navigation(group if enabled else None))
+                lay.addWidget(toggle)
+                group = QWidget()
+                links = QVBoxLayout(group)
+                links.setContentsMargins(6, 0, 0, 4)
+                links.setSpacing(2)
+                lay.addWidget(group)
+                self.nav_sections[group_name] = (toggle, group)
+            self.nav_group_for[name] = group_name
             b = self._rail_btn(NAV_TEXT.get(name, name), ic)
             b.setCheckable(True)
             b.clicked.connect(lambda _=False, n=name: self.goto(n))
             self.nav.addButton(b, i)
             self.nav_btns[name] = b
-            lay.addWidget(b)
+            links.addWidget(b)
         lay.addStretch(1)
+        lay.addWidget(nb)
+        lay.addWidget(ob)
         self.log_btn = self._rail_btn("运行日志", "mdi6.console-line")
         self.log_btn.setCheckable(True)
         self.log_btn.toggled.connect(self.logw.setVisible)
@@ -161,6 +249,7 @@ class MainWindow(QMainWindow):
         light = theme.MODE == "light"
         tb = self._rail_btn("切换到深色" if light else "切换到亮色",
                             "mdi6.weather-night" if light else "mdi6.white-balance-sunny")
+        self.theme_button = tb
         tb.setCheckable(False)
         tb.clicked.connect(self.toggle_theme)
         lay.addWidget(tb)
@@ -172,12 +261,22 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _rail_btn(text, ic):
         b = btn(text, None, "nav")
-        b.setIcon(icon(ic, C["muted"], C["text"]))
+        b.setIcon(icon(ic, C["text2"], C["text"]))
         b.setIconSize(QSize(17, 17))
         return b
 
+    def expand_navigation(self, current):
+        for name, (toggle, group) in self.nav_sections.items():
+            active = name == current
+            toggle.setChecked(active)
+            toggle.setIcon(icon("mdi6.chevron-down" if active else "mdi6.chevron-right", C["muted"]))
+            group.setVisible(active)
+
     def goto(self, name, subject=None):
         page = self.pages[name]
+        self.expand_navigation(self.nav_group_for[name])
+        self.location.setText("BIAP 工作台    /    " + NAV_TEXT.get(name, name))
+        self.work_area.widget().set_overview(name == "项目")
         self.stack.setCurrentWidget(page)
         self.nav_btns[name].setChecked(True)
         if subject is not None and hasattr(page, "on_show"):
@@ -187,7 +286,17 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 项目
     def set_project(self, p, quiet=False):
+        if p is not self.project:
+            page = self.pages["预处理"]
+            page.raw = page.ica = page.raw_ica = page._sig = page.fitted_ica = None
         self.project = p
+        from .project_bridge import restore_analysis
+        restore_analysis(self)
+        if self.assistant is not None:
+            self.assistant.bind_project()
+        if self.project_sources is not None:
+            self.project_sources.fill()
+        self.pages["事件"]._headers.clear()
         self.settings.setValue("last_project", p.folder)
         self.setWindowTitle(f"{p.name} — {APP_NAME} {__version__}")
         if not quiet:
@@ -200,11 +309,14 @@ class MainWindow(QMainWindow):
         if p:
             self.proj_name.setText(p.name)
             self.proj_name.setToolTip(p.folder)
-            self.status.setText(f"{p.name}　·　{len(p.done_subjects())}/{len(p.subjects)} 名被试可分析　·　{p.folder}")
+            self.status.setText(f"{p.name}　 ·　 {len(p.done_subjects())} / {len(p.subjects)} 名被试可分析")
+            self.status.setToolTip(p.folder)
 
     def project_changed(self, msg=""):
         if self.project:
             self.project.save()
+        if self.project_sources is not None:
+            self.project_sources.fill()
         if msg:
             log(msg)
             self.statusBar().showMessage(msg, 6000)
@@ -272,21 +384,9 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self):
         new = "dark" if theme.MODE == "light" else "light"
-        name = "亮色" if new == "light" else "深色"
-        if self.runner.busy:
-            QMessageBox.information(self, "请稍等", "计算完成后再切换外观。")
-            return
-        if QMessageBox.question(self, "切换外观", f"换成{name}外观需要重启软件，项目会先自动保存。现在重启吗？") \
-                != QMessageBox.Yes:
-            return
-        QSettings("EEGAnalyzer", "EEGAnalyzer").setValue("theme", new)
-        if self.project:
-            self.project.save()
-        import sys
-        from PySide6.QtCore import QProcess
-        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
-        QProcess.startDetached(sys.executable, args)
-        self.close()
+        from .appearance import apply_window_theme
+        apply_window_theme(self, new)
+        self.settings.setValue("theme", new)
 
     def add_report(self, res):
         self.reports.append((datetime.now(), res))
@@ -325,11 +425,21 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def closeEvent(self, e):
+        if self.assistant is not None and self.assistant.worker and self.assistant.worker.isRunning():
+            QMessageBox.information(self, "AI 助手", "回复完成后即可退出。你也可以先隐藏助手。")
+            e.ignore()
+            return
         if self.runner.busy and QMessageBox.question(self, "还在计算", "还有计算没完成，确定退出吗？") != QMessageBox.Yes:
             e.ignore()
             return
         if self.project:
-            self.project.save()
+            try:
+                self.project.save()
+            except (ValueError, OSError) as exc:
+                if QMessageBox.question(self,"项目保存失败",str(exc)+"。放弃本窗口未保存的修改并关闭吗？",
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    e.ignore()
+                    return
         for w in list(self._windows):
             try:
                 w.close()

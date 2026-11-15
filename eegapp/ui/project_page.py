@@ -4,7 +4,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QHeaderView, QInputDialog, QListWidget, QMessageBox, QStackedWidget,
+                               QHeaderView, QInputDialog, QListWidget, QMenu, QFrame, QHBoxLayout, QProgressBar, QMessageBox, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ..compat import resource_path
@@ -14,83 +14,219 @@ from ..core.single import parse_names
 from ..theme import C
 from .base import BasePage
 from .common import combo, fspin, ispin, line, log
+from .workspace_surface import StagePath
 from .files_widget import ConditionDialog, FileList
-from .widgets import Card, EmptyState, MetricGrid, btn, checkbox, hbox, label
+from .widgets import Card, EmptyState, btn, checkbox, hbox, label
+
+
+class RecordTable(QTableWidget):
+    def __init__(self, page):
+        super().__init__(0, 7)
+        self.page=page
+        self.setDragEnabled(True)
+
+    def startDrag(self, actions):
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QDrag
+        from .assistant_panel import MIME
+        import json
+        row=self.currentRow()
+        if row < 0 or row >= len(self.page._rows): return
+        subject, rec=self.page._rows[row]
+        if self.currentColumn()==3 and rec: kind,name="events",rec.id
+        elif self.currentColumn()==5 and subject.epochs_file: kind,name="epochs",subject.name
+        elif rec: kind,name="record",rec.id
+        elif subject.epochs_file: kind,name="epochs",subject.name
+        else: return
+        mime=QMimeData()
+        mime.setData(MIME,json.dumps(("project",self.page.project.folder,kind,name)).encode())
+        drag=QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.CopyAction)
 
 
 class ProjectPage(BasePage):
-    title = "项目"
-    subtitle = "一个项目 = 一组被试 + 一套预处理设置，所有分析都在这里汇总"
+    title = "项目总览"
+    subtitle = "管理被试、记录与分析进度"
 
     def __init__(self, ctx):
         super().__init__(ctx, with_side=False)
+        self.heading.hide()
+        self.sub.hide()
+        self._rows = []
+        hero = QHBoxLayout()
+        hero.setSpacing(18)
+        intro = QVBoxLayout()
+        intro.setSpacing(2)
+        intro.addStretch()
+        self.hero_label = label("脑电分析", "HeroTitle")
+        self.project_title = label("工作台", "HeroProject", wrap=True)
+        intro.addWidget(self.hero_label)
+        intro.addWidget(self.project_title)
+        intro.addSpacing(10)
+        self.description = label("", "Sub", wrap=True)
+        intro.addWidget(self.description)
+        intro.addStretch()
+        hero.addLayout(intro, 1)
+        panel = QFrame()
+        panel.setObjectName("Journey")
+        self.journey_card = panel
+        panel.setMinimumHeight(245)
+        journey = QVBoxLayout(panel)
+        journey.setContentsMargins(22, 16, 22, 14)
+        journey.setSpacing(2)
+        journey.addWidget(label("分析就绪度", "Sub"))
+        meter = QHBoxLayout()
+        self.ready_count = label("—", "Percentage")
+        self.ready_bar = QProgressBar()
+        self.ready_bar.setTextVisible(False)
+        self.ready_bar.setRange(0, 100)
+        self.ready_bar.setMaximumWidth(115)
+        meter.addWidget(self.ready_count)
+        meter.addStretch()
+        meter.addWidget(self.ready_bar, 1)
+        journey.addLayout(meter)
+        self.stages = StagePath()
+        journey.addWidget(self.stages, 1)
+        self.next_step = btn("打开项目", self.continue_project)
+        self.next_step.setObjectName("JourneyNext")
+        journey.addWidget(self.next_step)
+        hero.addWidget(panel, 1)
+        self.body.addLayout(hero)
         self.stack = QStackedWidget()
         self.body.addWidget(self.stack, 1)
-        self.empty = EmptyState(
-            "mdi6.folder-multiple-outline", "从一个项目开始",
-            "新建项目后，可以一次导入多个被试的原始数据（EDF、BDF、BrainVision、EEGLAB…），"
-            "也可以导入已经分段好的数据或手册格式的 .mat 数组。没有数据的话，先试试合成演示项目。",
+        self.empty = EmptyState("mdi6.folder-open-outline", "打开工作项目",
+            "可从连续脑电记录开始，也可以直接导入已经分段的数据。",
             [btn("新建项目", ctx.new_project, "primary", "mdi6.plus"),
              btn("打开项目", ctx.open_project, None, "mdi6.folder-open-outline"),
-             btn("体验演示项目", ctx.demo_project, "accent", "mdi6.flask-outline")])
+             btn("体验示例", ctx.demo_project, "ghost", "mdi6.flask-outline")])
         self.stack.addWidget(self.empty)
-        self._rows = []
-
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(14)
-        self.metrics = MetricGrid(4)
-        lay.addWidget(self.metrics)
-        imp = Card("添加数据", "原始数据依次经过「预处理」「事件与分段」；分段数据和数组导入后可以直接分析。"
-                             "一个被试可以有多条记录（例如不同条件各录一次）")
-        imp.add(hbox(btn("导入文件夹", self.add_folder, "primary", "mdi6.folder-plus-outline",
-                         "按“被试/条件/文件”的目录结构自动整理"),
-                     btn("添加文件", self.add_raw, None, "mdi6.file-plus-outline",
-                         "EDF / BDF / BrainVision / EEGLAB / CNT / GDF / FIF …，可多选"),
-                     btn("分段数据", self.add_epochs, None, "mdi6.import", "MNE 的 -epo.fif"),
-                     btn("数组", self.add_arrays, None, "mdi6.matrix", ".mat / .h5 / .npy"),
-                     btn("手册示例数据", self.add_sample, "ghost", "mdi6.book-open-variant"),
-                     "stretch"))
-        lay.addWidget(imp)
+        lay.setSpacing(10)
+        lower = QHBoxLayout()
+        lower.setSpacing(12)
+        lay.addLayout(lower, 1)
         tc = Card("被试与记录")
-        self.table = QTableWidget(0, 7)
+        add = btn("导入数据", None, "primary", "mdi6.plus")
+        menu = QMenu(add)
+        for title, fn in (("原始数据文件…", self.add_raw), ("被试文件夹…", self.add_folder),
+                          ("分段数据…", self.add_epochs), ("数据数组…", self.add_arrays),
+                          ("手册示例数据", self.add_sample)):
+            menu.addAction(title, fn)
+        add.setMenu(menu)
+        tc.head.addWidget(add)
+        manage = btn("记录操作", None, None, "mdi6.dots-horizontal")
+        actions = QMenu(manage)
+        actions.addAction("修改被试或条件…", self.edit_rows)
+        actions.addAction("移除所选记录…", self.remove)
+        manage.setMenu(actions)
+        tc.head.addWidget(manage)
+        self.table = RecordTable(self)
+        self.table.setToolTip("可拖入 AI 助手。拖事件列引用事件表；拖文件列引用记录摘要。")
         self.table.setHorizontalHeaderLabels(["被试", "条件", "预处理", "事件", "坏导", "分段", "文件 / 备注"])
         self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.cellDoubleClicked.connect(self._open_subject)
         tc.add(self.table)
-        tc.head.addWidget(btn("改被试 / 条件…", self.edit_rows, "ghost", "mdi6.pencil-outline"))
-        tc.head.addWidget(btn("去预处理", lambda: ctx.goto("预处理"), "ghost", "mdi6.arrow-right"))
-        tc.head.addWidget(btn("移除所选", self.remove, "danger", "mdi6.delete-outline"))
-        lay.addWidget(tc, 1)
-        foot = hbox(btn("保存项目", ctx.save_project, None, "mdi6.content-save-outline"),
-                    btn("打开其他项目", ctx.open_project, "ghost", "mdi6.folder-open-outline"),
-                    btn("新建项目", ctx.new_project, "ghost", "mdi6.plus"), "stretch")
-        lay.addLayout(foot)
+        lower.addWidget(tc, 4)
+        self.signal_card = QFrame()
+        self.signal_card.setObjectName("SignalSummary")
+        side = QVBoxLayout(self.signal_card)
+        side.setContentsMargins(18, 20, 18, 18)
+        side.setSpacing(5)
+        side.addWidget(label("分段数据", "H2"))
+        side.addSpacing(10)
+        side.addWidget(label("采样率", "Caption"))
+        self.sample_rate = label("—", "Readout")
+        side.addWidget(self.sample_rate)
+        self.channels = label("", "Sub", wrap=True)
+        side.addWidget(self.channels)
+        side.addSpacing(22)
+        side.addWidget(label("实验条件", "Caption"))
+        self.conditions = label("—", "H2", wrap=True)
+        side.addWidget(self.conditions)
+        side.addStretch()
+        lower.addWidget(self.signal_card, 1)
+        lay.addLayout(hbox(btn("保存项目", ctx.save_project, "ghost", "mdi6.content-save-outline"),
+                           "stretch", btn("前往预处理", lambda: ctx.goto("预处理"), None, "mdi6.arrow-right")))
         self.stack.addWidget(w)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        compact = self.width() < 850
+        self.signal_card.setVisible(not compact)
+        self.update_description()
+        self.journey_card.setFixedHeight(max(238, min(380, round(self.height() * .46))))
+        self.hero_label.setProperty("compact", compact)
+        self.project_title.setProperty("compact", compact)
+        for heading in (self.hero_label, self.project_title):
+            heading.style().unpolish(heading)
+            heading.style().polish(heading)
+
+    def update_description(self):
+        summary = getattr(self, "project_caption", "")
+        if summary and self.width() < 850:
+            details = [label.text() for label in (self.sample_rate, self.conditions) if label.text() != "—"]
+            summary = " · ".join([summary, *details])
+        if summary:
+            self.description.setText(summary)
+
+    def continue_project(self):
+        if self.project is None:
+            self.ctx.open_project()
+        elif self.next_page == "导入":
+            self.add_raw()
+        else:
+            self.ctx.goto(self.next_page)
+
 
     def on_show(self):
         super().on_show()
         p = self.project
         if p is None:
             self.stack.setCurrentIndex(0)
-            self.sub.setText(self.subtitle)
+            self.project_caption = ""
+            self.hero_label.setText("脑电分析")
+            self.project_title.setText("工作台")
+            self.description.setText("新建或打开项目，查看数据与分析进度。")
+            self.stages.set_counts(0, 0, 0)
+            self.ready_count.setText("—")
+            self.next_step.setText("下一步　打开项目　→")
+            self.ready_bar.setValue(0)
             return
         self.stack.setCurrentIndex(1)
-        self.sub.setText(f"{p.folder}")
+        self.hero_label.setText("当前项目")
+        self.project_title.setText(p.name)
+        self.project_title.setToolTip(p.folder)
         info = p.summary()
-        m = [("被试", str(info["n"]), f"{info['done']} 人可分析"),
-             ("记录", f"{info['rec_done']}/{info['n_rec']}", "已预处理"),
-             ("条件", "、".join(map(str, info["conds"][:3])) or "—",
-              f"共 {len(info['conds'])} 个" if info["conds"] else "分段后显示")]
-        if info["sfreq"]:
-            m.append(("采样", f"{info['sfreq']:g} Hz", f"{info['n_ch']} 个脑电通道"))
-        self.metrics.set(m)
+        self.project_caption = f"{info['n']} 名被试 · {info['n_rec']} 条连续记录 · {info['done']} 名被试可分析"
+        self.stages.set_counts(info["n_rec"], info["rec_done"], info["done"])
+        if info["rec_done"] < info["n_rec"]:
+            self.next_page, action = "预处理", "检查连续记录"
+        elif info["done"] < info["n"] and info["n_rec"]:
+            self.next_page, action = "事件", "查看事件与分段"
+        elif info["done"]:
+            self.next_page, action = "ERP", "打开 ERP 分析"
+        else:
+            self.next_page, action = "导入", "导入原始记录"
+        self.next_step.setText("下一步　" + action + "　→")
+        percent = round(100 * info["done"] / max(1,info["n"]))
+        self.ready_count.setText(f"{percent}%" if info["n"] else "—")
+        self.ready_count.setToolTip("可分析被试数 / 全部被试数")
+        self.ready_bar.setValue(percent)
+        self.sample_rate.setText(f"{info['sfreq']:g} Hz" if info["sfreq"] else "—")
+        self.channels.setText(f"{info['n_ch']} 个脑电通道" if info["sfreq"] else "分段后显示")
+        self.conditions.setText("、".join(map(str,info["conds"][:3])) or "—")
+        self.conditions.setToolTip("、".join(map(str,info["conds"])))
+        self.update_description()
         rows = []          # (被试, 记录或 None)
         for s in p.subjects:
             rows += [(s, r) for r in s.recordings] or [(s, None)]
@@ -108,7 +244,8 @@ class ProjectPage(BasePage):
                         ", ".join(r.bads) or "—", seg, r.source]
                 state = r.status == pj.REC_DONE
             for j, v in enumerate(vals):
-                it = QTableWidgetItem(v)
+                it = QTableWidgetItem(os.path.basename(v) if j == 6 and r else v)
+                it.setToolTip(v)
                 if j == 2 and state is not None:
                     it.setForeground(QColor(C["ok"] if state else C["warn"]))
                 if j == 5 and s.epochs_file:

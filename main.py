@@ -32,13 +32,13 @@ def main():
 
     pm = QPixmap(440, 170)
     from eegapp.theme import C
-    pm.fill(QColor(C["rail"]))
+    pm.fill(QColor("#303d29"))
     splash = QSplashScreen(pm)
     f = QFont()
     f.setFamilies(["Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB"])
     f.setPointSize(12)
     splash.setFont(f)
-    splash.showMessage("脑电分析软件\n正在加载分析引擎 …", Qt.AlignCenter, QColor(C["text"]))
+    splash.showMessage("BIAP  ·  脑电分析工作台\n正在加载分析引擎…", Qt.AlignCenter, QColor("#f2f7fc"))
     splash.show()
     app.processEvents()
 

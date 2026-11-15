@@ -32,7 +32,7 @@ def make(onsets, names, durations=None):
 
 
 def tidy(df):
-    df = df[COLS].copy()
+    df = df[COLS + [c for c in df.columns if c not in COLS]].copy()
     df["onset"] = df["onset"].astype(float).round(6)
     df["duration"] = df["duration"].fillna(0).astype(float).round(6)
     df["description"] = df["description"].astype(str)
