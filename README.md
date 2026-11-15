@@ -12,7 +12,7 @@ EEG 分析在本机进行。顶部可分别显示或隐藏工作窗口和 AI 助
 
 ## 下载使用
 
-在 [Releases](../../releases) 下载 `BIAP-2.4.0-Windows-x64.exe`，双击安装。安装时可以选择位置并创建桌面和开始菜单快捷方式，支持当前用户安装。
+在 [Releases](../../releases) 下载 `BIAP-2.4.1-Windows-x64.exe`，双击安装。安装时可以选择位置并创建桌面和开始菜单快捷方式，支持当前用户安装。
 
 **Mac**：Apple 芯片（M1/M2/M3/M4…）下载 `eeg-analyzer-*-macos-arm64.dmg`，Intel 芯片下载 `eeg-analyzer-*-macos-x86_64.dmg`。打开 dmg 后把软件拖进“应用程序”；第一次打开被拦截时，到“系统设置 → 隐私与安全性”点“仍要打开”。Mac 版由 GitHub Actions（`.github/workflows/build-macos.yml`）在 macOS 上自动打包并自检。
 

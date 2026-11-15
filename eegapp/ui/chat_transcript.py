@@ -126,6 +126,7 @@ class ChatTranscript(QScrollArea):
         self.rows.setContentsMargins(4, 8, 4, 12)
         self.rows.setAlignment(Qt.AlignTop)
         self.rows.setSpacing(10)
+        self.rows.addStretch(1)
         self.setWidget(self.page)
         self.follow = True
         bar = self.verticalScrollBar()
@@ -150,18 +151,18 @@ class ChatTranscript(QScrollArea):
         row.addWidget(card, 5)
         if not mine:
             row.addStretch(1)
-        self.rows.addLayout(row)
+        self.rows.insertLayout(self.rows.count()-1, row)
 
     def add_activity(self):
         activity = Activity()
-        self.rows.addWidget(activity)
+        self.rows.insertWidget(self.rows.count()-1, activity)
         return activity
 
     def review_button(self, count, callback):
         button = QPushButton(f"预览修改（{count} 项）")
         button.setObjectName("ReviewChanges")
         button.clicked.connect(callback)
-        self.rows.addWidget(button, 0, Qt.AlignLeft)
+        self.rows.insertWidget(self.rows.count()-1, button, 0, Qt.AlignLeft)
         return button
 
     def clear(self):
@@ -175,6 +176,7 @@ class ChatTranscript(QScrollArea):
                     empty(item.layout())
                     item.layout().deleteLater()
         empty(self.rows)
+        self.rows.addStretch(1)
         self.follow = True
 
     def toPlainText(self):
