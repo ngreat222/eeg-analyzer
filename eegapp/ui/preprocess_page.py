@@ -8,10 +8,10 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-                               QHeaderView, QListWidgetItem, QMessageBox, QTableWidget, QTableWidgetItem,
+                               QHeaderView, QListWidget, QInputDialog, QLineEdit, QListWidgetItem, QMessageBox, QTableWidget, QTableWidgetItem,
                                QVBoxLayout)
 
-from ..core import analysis, project as pj, single
+from ..core import analysis, project as pj, quality, single
 from ..core.single import parse_floats, parse_names
 from .. import theme
 from ..theme import C
@@ -20,7 +20,7 @@ from .common import combo, fspin, line, log
 from .widgets import EmptyState, ResultView, StepList, btn, checkbox, hbox, icon, label, side_list
 
 MONTAGES = ["自动识别", "不设置"] + single.STANDARD_MONTAGES
-PRE_FIELDS = ("montage", "reref", "reref_channels", "notch", "harmonics", "l_freq", "h_freq", "resample",
+PRE_FIELDS = ("order", "montage", "reref", "reref_channels", "notch", "harmonics", "l_freq", "h_freq", "resample",
               "interpolate", "ica", "ica_n", "ica_method", "ica_auto_eog")
 
 
@@ -60,6 +60,12 @@ class PreprocessPage(BasePage):
         self.rename.setToolTip("按顺序用位置文件里的通道名替换数据里的通道名")
         self.montage = s.row("电极位置", combo(MONTAGES))
 
+        s = self.section("预处理顺序与质量检查")
+        s.widget(btn("调整处理顺序…", self.edit_order))
+        self.segment_limit = s.row("自动坏段峰峰阈值", fspin(150, 1, 10000, 10, 1, " µV"))
+        s.widget(btn("手动编辑坏段…", lambda: self.review_quality("manual")))
+        s.widget(btn("自动检测并复核坏段…", lambda: self.review_quality("detect")))
+        s.widget(btn("DeepSeek 质控助手…", lambda: self.review_quality("ai")))
         s = self.section("滤波")
         self.notch = s.row("陷波", fspin(50, 0, 1000, 10, 1, " Hz"))
         self.harm = s.widget(checkbox("同时去除谐波"))
@@ -70,7 +76,7 @@ class PreprocessPage(BasePage):
 
         s = self.section("坏导与参考")
         self.bads = s.row("坏导", line("", "例：FC5, T8"))
-        s.widget(btn("自动检测坏导", self.detect_bads, "accent", "mdi6.radar"))
+        s.widget(btn("在插值步骤前检测坏导", self.detect_bads, "accent", "mdi6.radar"))
         self.interp = s.widget(checkbox("插值坏导", True))
         self.reref = s.row("重参考", combo(["不改变", "平均参考", "指定通道"]))
         self.reref_ch = s.row("参考通道", line("", "例：M1, M2"))
@@ -129,7 +135,7 @@ class PreprocessPage(BasePage):
     def _signature(self, s, r):
         """决定“载入的数据还能不能直接用”的所有设置。坏导、通道、滤波任一变化都要重新读。"""
         p = self.project.pipeline
-        return json.dumps([r.id, r.bads, r.non_eeg, s.locs, s.rename_from_locs,
+        return json.dumps([r.id, r.bads, r.bad_segments, r.non_eeg, s.locs, s.rename_from_locs,
                            {k: getattr(p, k) for k in PRE_FIELDS if not k.startswith("ica")}],
                           ensure_ascii=False, sort_keys=True)
 
@@ -209,10 +215,6 @@ class PreprocessPage(BasePage):
             ch = ("wait", f"自动识别出 {len(hint)} 个非脑电通道", "待确认")
         else:
             ch = ("todo", "载入后自动识别非脑电通道（时间戳、电量、接触质量等）", "")
-        filt = "，".join(x for x in [
-            f"高通 {p.l_freq:g} Hz" if p.l_freq else "不做高通（会去掉直流偏置）",
-            f"低通 {p.h_freq:g} Hz" if p.h_freq else "",
-            f"陷波 {p.notch:g} Hz" if p.notch else "", f"重采样 {p.resample:g} Hz" if p.resample else ""] if x)
         bads = ("done" if r.bads else "todo",
                 ("坏导 " + ", ".join(r.bads) + ("，插值" if p.interpolate else "，只标记")) if r.bads
                 else "没有标记坏导。可以点「自动检测坏导」", "已标记" if r.bads else "")
@@ -226,14 +228,112 @@ class PreprocessPage(BasePage):
             ica = ("todo", "处理时拟合 ICA，自动识别眼电成分；也可以先点「ICA」检查", "")
         self.steps.set([
             (ch[0], "通道", ch[1], ch[2]),
-            ("done" if done or loaded else "todo", "滤波", filt, ""),
+            ("done" if r.bad_segments else "todo", "坏段", f"已标记 {len(r.bad_segments)} 个质控区间", ""),
+            ("done" if done or loaded else "todo", "执行顺序", " → ".join(p.order), ""),
             (bads[0], "坏导", bads[1], bads[2]),
-            ("done" if p.reref != "不改变" else "off", "参考",
-             {"平均参考": "平均参考", "指定通道": f"参考 {p.reref_channels}"}.get(p.reref, "保持原参考"), ""),
             (ica[0], "ICA", ica[1], ica[2]),
             ("done" if done else "todo", "保存", "已保存干净的连续数据，可以去「事件与分段」" if done
              else "还没处理", "完成" if done else ""),
         ])
+
+    def _invalidate(self, subj, rec):
+        self.project._cache.pop(subj.name, None)
+        rec.status = pj.REC_RAW
+        subj.status, subj.epochs_file, subj.n_trials = pj.STATUS_RAW, "", {}
+
+    def edit_order(self):
+        if not self.need_project(need_done=False):
+            return
+        p = self.project
+        dialog = QDialog(self)
+        dialog.setWindowTitle("拖动排列步骤 · ICA 在末尾执行")
+        layout = QVBoxLayout(dialog)
+        steps = QListWidget()
+        steps.addItems(p.pipeline.order)
+        steps.setDragDropMode(QAbstractItemView.InternalMove)
+        layout.addWidget(steps)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec():
+            order = [steps.item(i).text() for i in range(steps.count())]
+            if p.pipeline.order != order:
+                p.pipeline.order = order
+                for subj, rec in p.recordings():
+                    self._invalidate(subj, rec)
+                p.save()
+                self.raw = self.ica = self.raw_ica = self._sig = None
+                self._update_steps()
+
+    def review_quality(self, mode):
+        cur = self._need_rec()
+        if not cur:
+            return
+        subj, rec = cur
+        self._save_pipe()
+        project = self.project
+        limit = self.segment_limit.value()
+
+        def work():
+            raw, _ = pj.open_raw(subj, rec, project.pipeline, log=log)
+            duration = raw.n_times / raw.info["sfreq"]
+            if mode == "manual":
+                return duration, [], {}
+            candidates, summary = quality.inspect_raw(raw, limit)
+            pipe = project.pipeline
+            summary.update({"执行顺序": pipe.order, "陷波Hz": pipe.notch, "高低通Hz": [pipe.l_freq, pipe.h_freq],
+                            "重采样Hz": pipe.resample, "重参考": pipe.reref, "已标坏导数": len(rec.bads),
+                            "插值": pipe.interpolate, "ICA": pipe.ica, "已确认坏段数": len(rec.bad_segments)})
+            return duration, candidates, summary
+
+        def done(result):
+            duration, candidates, summary = result
+            if mode == "ai":
+                detail = json.dumps(summary, ensure_ascii=False, indent=2)
+                box = QMessageBox(self)
+                box.setWindowTitle("DeepSeek 质控助手")
+                box.setText("向 DeepSeek 发送本次质量摘要？可展开详细信息查看全部指标和候选区间。")
+                box.setDetailedText(detail)
+                box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+                if box.exec() != QMessageBox.Yes:
+                    return
+                key = os.environ.get("DEEPSEEK_API_KEY")
+                if not key:
+                    key, ok = QInputDialog.getText(self, "DeepSeek", "本次使用的 API Key", QLineEdit.Password)
+                    if not ok or not key.strip():
+                        return
+                self.run("DeepSeek 质控复核", lambda: quality.advise(summary, key.strip()),
+                         lambda msg: QMessageBox.information(self, "DeepSeek 复核建议", msg))
+                return
+            rows = list(rec.bad_segments)
+            rows.extend(row for row in candidates if row not in rows)
+            initial = chr(10).join(f"{a:.12g} {b:.12g} {reason}" for a, b, reason in rows)
+            while True:
+                initial, ok = QInputDialog.getMultiLineText(self, f"{rec.id} · 坏段复核",
+                    f"共 {duration:.3f} 秒。每行填写 开始秒 结束秒 [原因]。删除行可撤销区间，确定后生效。", initial)
+                if not ok:
+                    return
+                try:
+                    selected = []
+                    for row in initial.splitlines():
+                        if not row.strip():
+                            continue
+                        fields = row.split(maxsplit=2)
+                        a, b = map(float, fields[:2])
+                        if not 0 <= a < b <= duration + 1e-9:
+                            raise ValueError()
+                        selected.append([a, min(b, duration), fields[2] if len(fields) > 2 else "手动"])
+                    break
+                except ValueError:
+                    QMessageBox.warning(self, "区间格式", "请检查每行的起止时间，区间必须在录制范围内。")
+            if selected != rec.bad_segments:
+                rec.bad_segments = selected
+                self._invalidate(subj, rec)
+                project.save()
+                self.raw = self.ica = self.raw_ica = self._sig = None
+                self._update_steps()
+        self.run("读取连续记录并检查质量", work, done)
 
     def _pick_locs(self):
         p, _ = QFileDialog.getOpenFileName(self, "电极位置文件", os.path.expanduser("~/Desktop"),
@@ -334,7 +434,7 @@ class PreprocessPage(BasePage):
         def work():
             raw, _ = pj.open_raw(s, r, pipe, log=log)
             raw.info["bads"] = []
-            pj.filter_raw(raw, pipe, log=log, interpolate=False)
+            pj.filter_raw(raw, pipe, log=log, interpolate=False, stop_before='坏道插值')
             return pj.suggest_bads(raw)
 
         def done(sug):
@@ -343,7 +443,7 @@ class PreprocessPage(BasePage):
                 res.table = (["通道", "原因"], [[k, v] for k, v in sug.items()])
                 res.table_title = "建议标为坏导"
                 res.notes = ["已把建议填进右边的“坏导”，可以删改；在「波形」里也可以逐个确认。"]
-                self.bads.setText(", ".join(sug))
+                self.bads.setText(", ".join(dict.fromkeys([*parse_names(self.bads.text()), *sug])))
             else:
                 res.notes = ["没有发现明显的坏导。"]
             res.metrics = [("建议坏导", str(len(sug)), "整段数据按 2 秒小窗和其他电极比较")]
@@ -359,16 +459,31 @@ class PreprocessPage(BasePage):
             return
         s, r = self._current()
         try:
-            b = self.raw.plot(duration=10, n_channels=min(32, len(self.raw.ch_names)), block=False, show=True,
-                              theme=theme.BROWSER, title=f"{r.id}：点击通道名标记坏导，关闭后生效")
+            raw = self.raw
+            project = self.project
+            original = {(round(float(a - raw.first_time), 7), round(float(d), 7), str(n))
+                        for a, d, n in zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description)
+                        if not n.startswith("BAD_qc_")}
+            b = raw.plot(duration=10, n_channels=min(32, len(raw.ch_names)), block=False, show=True,
+                         theme=theme.BROWSER, title=f"{r.id}：按 A 框选坏段（BAD 开头），关闭保存")
 
             def closed():
-                r.bads = sorted(set(r.bads) | set(self.raw.info["bads"]))
-                self.bads.setText(", ".join(r.bads))
-                self.project.save()
-                self._sig = None             # 坏导变了，处理时重新读取
-                log(f"{r.id} 坏导：{r.bads or '无'}")
-                self._update_steps()
+                if self.project is not project or self.raw is not raw:
+                    return
+                segments = []
+                for a, d, name in zip(raw.annotations.onset, raw.annotations.duration, raw.annotations.description):
+                    start = round(float(a - raw.first_time), 7)
+                    if not name.upper().startswith("BAD") or d <= 0 or (start, round(float(d), 7), name) in original:
+                        continue
+                    segments.append([max(0, start), start + float(d), str(name).removeprefix("BAD_qc_")])
+                bads = sorted(set(r.bads) | set(raw.info["bads"]))
+                if segments != r.bad_segments or bads != sorted(r.bads):
+                    self._invalidate(s, r)
+                    r.bad_segments, r.bads = segments, bads
+                    self.bads.setText(", ".join(r.bads))
+                    project.save()
+                    self.raw = self.ica = self.raw_ica = self._sig = None
+                    self._update_steps()
             self.ctx.keep_window(b, closed)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "波形浏览器", str(e))

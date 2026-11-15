@@ -30,8 +30,12 @@ EPOCH_EVENTS = "按事件"
 EPOCH_FIXED = "固定长度"
 
 
+STEPS = ("陷波", "高低通", "重采样", "坏道插值", "重参考")
+
+
 @dataclass
 class Pipeline:
+    order: list = field(default_factory=lambda: list(STEPS))
     # 通道与电极
     montage: str = "自动识别"          # 自动识别 / 标准模板名 / 不设置
     reref: str = "不改变"              # 不改变 / 平均参考 / 指定通道
@@ -73,6 +77,7 @@ class Recording:
     bads: list = field(default_factory=list)
     ica_exclude: list = field(default_factory=list)
     ica_manual: bool = False          # True = 排除成分由用户手动指定
+    bad_segments: list = field(default_factory=list)  # 起止秒、来源
     clean_file: str = ""
     note: str = ""
 
@@ -586,6 +591,8 @@ def open_raw(subj, rec, pipe, log=print, hint_out=None):
             raw.set_montage(mne.channels.make_standard_montage(pipe.montage), on_missing="warn",
                             match_case=False)
     raw.info["bads"] = [b for b in rec.bads if b in raw.ch_names]
+    for start, stop, source in rec.bad_segments:
+        raw.annotations.append(raw.first_time + start, stop - start, "BAD_qc_" + source)
     return raw, non
 
 
@@ -601,26 +608,56 @@ def _auto_montage(raw, log):
     return False
 
 
-def filter_raw(raw, pipe, log=print, interpolate=True):
-    if not pipe.l_freq:
-        # 不做高通时至少去掉直流偏置，否则振幅剔除会把所有试次都剔掉
-        picks = mne.pick_types(raw.info, eeg=True, eog=True, exclude=[])
-        raw._data[picks] -= np.median(raw._data[picks], axis=1, keepdims=True)
-        log("未做高通滤波，已去掉各通道的直流偏置")
-    single.apply_filters(raw, single.none_if_zero(pipe.notch), pipe.harmonics,
-                         single.none_if_zero(pipe.l_freq), single.none_if_zero(pipe.h_freq),
-                         "fir", single.none_if_zero(pipe.resample), log=log)
-    if interpolate and pipe.interpolate and raw.info["bads"]:
-        if raw.get_montage() is None:
-            log("没有电极位置，坏导只标记、不插值")
-        else:
-            single.interpolate_bads(raw, log=log)
-    if pipe.reref == "平均参考":
-        raw.set_eeg_reference("average", projection=False, verbose=False)
-        log("平均参考")
-    elif pipe.reref == "指定通道" and pipe.reref_channels.strip():
-        raw.set_eeg_reference(single.parse_names(pipe.reref_channels), projection=False, verbose=False)
-        log(f"参考：{pipe.reref_channels}")
+def filter_raw(raw, pipe, log=print, interpolate=True, stop_before=None):
+    if sorted(pipe.order) != sorted(STEPS):
+        raise ValueError("步骤必须各出现一次。")
+    # 已标记缺失值在连续数组中使用有限占位，避免重采样把 NaN 扩散到整条记录。
+    if not np.isfinite(raw._data).all():
+        good = raw.get_data(reject_by_annotation="omit")
+        if not np.isfinite(good).all():
+            raise ValueError("有效区间含缺失值，请先自动检测并确认相应坏段。")
+        raw._data[~np.isfinite(raw._data)] = 0
+    for step in pipe.order:
+        if step == stop_before:
+            break
+        log(f"执行步骤：{step}")
+        if step == "陷波" and pipe.notch:
+            single.apply_filters(raw, notch=pipe.notch, harmonics=pipe.harmonics, log=log)
+        elif step == "高低通":
+            if not pipe.l_freq:
+                picks = mne.pick_types(raw.info, eeg=True, eog=True, exclude=[])
+                usable = raw.get_data(picks=picks, reject_by_annotation="omit")
+                if not usable.shape[1]:
+                    raise ValueError("没有剩余可用样本")
+                raw._data[picks] -= np.median(usable, axis=1, keepdims=True)
+            single.apply_filters(raw, l_freq=pipe.l_freq or None, h_freq=pipe.h_freq or None, log=log)
+        elif step == "重采样" and pipe.resample:
+            flagged = [(o, d) for o, d, name in zip(raw.annotations.onset, raw.annotations.duration,
+                                                       raw.annotations.description)
+                       if name.lower().startswith(("bad", "edge"))]
+            if flagged and pipe.resample != raw.info["sfreq"]:
+                # 与桌面参考流程一致，使用局部多相重采样并保留边缘保护区。
+                start = raw.first_time
+                end = start + raw.n_times / raw.info["sfreq"]
+                guard = max(1., 12. / min(pipe.resample, raw.info["sfreq"]))
+                for onset, duration in flagged:
+                    left = max(start, onset - guard)
+                    right = min(end, onset + duration + guard)
+                    raw.annotations.append(left, right - left, "BAD_resample_guard")
+                raw.resample(pipe.resample, method="polyphase")
+                log(f"重采样至 {pipe.resample:g} Hz，坏段两侧保护 {guard:g} 秒")
+            else:
+                single.apply_filters(raw, resample=pipe.resample, log=log)
+        elif step == "坏道插值" and interpolate and pipe.interpolate and raw.info["bads"]:
+            if raw.get_montage() is None:
+                log("没有电极位置，坏导只标记、不插值")
+            else:
+                single.interpolate_bads(raw, log=log)
+        elif step == "重参考":
+            if pipe.reref == "平均参考":
+                raw.set_eeg_reference("average", projection=False, verbose=False)
+            elif pipe.reref == "指定通道" and pipe.reref_channels.strip():
+                raw.set_eeg_reference(single.parse_names(pipe.reref_channels), projection=False, verbose=False)
     return raw
 
 
@@ -635,7 +672,7 @@ def suggest_bads(raw, win_sec=2.0):
         return {}
     names = np.array([raw.ch_names[i] for i in picks])
     step = max(1, int(raw.info["sfreq"] // 100))
-    x = raw.get_data(picks=picks)[:, ::step]
+    x = raw.get_data(picks=picks, reject_by_annotation="omit")[:, ::step]
     win = max(int(win_sec * raw.info["sfreq"] / step), 10)
     nw = x.shape[1] // win
     if nw < 3:
@@ -725,7 +762,8 @@ def preprocess_recording(project, subj, rec, raw=None, ica=None, log=print):
             ica.exclude = list(rec.ica_exclude)
             ica.apply(raw, verbose=False)
             log(f"ICA 去除成分 {rec.ica_exclude}")
-    raw.set_annotations(mne.Annotations([], [], []))       # 事件另外保存，干净数据里不带
+    raw.annotations.delete([i for i, tag in enumerate(raw.annotations.description)
+                            if not tag.lower().startswith(("bad", "edge"))])
     rel = clean_path(project, rec)
     os.makedirs(os.path.join(project.folder, "clean"), exist_ok=True)
     raw.save(project.path(rel), overwrite=True, fmt="single", verbose=False)
@@ -778,7 +816,8 @@ def epoch_subject(project, subj, log=print):
         raw.info["bads"] = list(bads)
         df = tables[r.id]
         bad = df[df["description"].map(ev.is_bad)]
-        raw.set_annotations(ev.to_annotations(bad) if len(bad) else mne.Annotations([], [], []))
+        for row in bad.itertuples():
+            raw.annotations.append(raw.first_time + row.onset, row.duration, row.description)
         if fixed:
             k = r.condition or "片段"
             events = mne.make_fixed_length_events(raw, id=code[k], duration=pipe.fixed_len,

@@ -56,6 +56,38 @@ jobs:
           cat "selftest-${{ matrix.arch }}.txt"
           grep -q "全部通过" "selftest-${{ matrix.arch }}.txt"
 
+      - name: 从 DMG 启动程序并检查主窗口
+        timeout-minutes: 5
+        run: |
+          mount_dir="$RUNNER_TEMP/biap-dmg"
+          mkdir -p "$mount_dir"
+          hdiutil attach dist/*.dmg -readonly -nobrowse -mountpoint "$mount_dir"
+          "$mount_dir/脑电分析软件.app/Contents/MacOS/脑电分析软件" &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true; wait "$app_pid" 2>/dev/null || true; hdiutil detach "$mount_dir"' EXIT
+          cat > "$RUNNER_TEMP/window.swift" <<'SWIFT'
+          import Foundation
+          import CoreGraphics
+          let pid = Int(CommandLine.arguments[1])!
+          for _ in 0..<120 {
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+              for w in windows {
+                  guard w[kCGWindowOwnerPID as String] as? Int == pid,
+                        w[kCGWindowLayer as String] as? Int == 0,
+                        let bounds = w[kCGWindowBounds as String] as? NSDictionary,
+                        let width = bounds["Width"] as? Double, width >= 700,
+                        let id = w[kCGWindowNumber as String] as? Int else { continue }
+                  print(id)
+                  exit(0)
+              }
+              Thread.sleep(forTimeInterval: 1)
+          }
+          exit(1)
+          SWIFT
+          window_id=$(swift "$RUNNER_TEMP/window.swift" "$app_pid")
+          echo "应用主窗口已显示，窗口 ID $window_id"
+          screencapture -x -o -l "$window_id" "startup-${{ matrix.arch }}.png" || true
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -63,6 +95,7 @@ jobs:
           path: |
             dist/*.dmg
             selftest-*.txt
+            startup-*.png
           if-no-files-found: warn
 
       - name: 上传到 Release

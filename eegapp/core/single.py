@@ -130,12 +130,12 @@ def apply_filters(raw, notch=None, harmonics=False, l_freq=None, h_freq=None,
         freqs = np.arange(notch, nyq, notch) if harmonics else [notch]
         freqs = [f for f in freqs if f < nyq]
         if freqs:
-            raw.notch_filter(freqs=freqs, method=method if method == "iir" else "fir")
+            raw.notch_filter(freqs=freqs, skip_by_annotation=("bad", "edge"), method=method if method == "iir" else "fir")
             log(f"陷波滤波：{', '.join(f'{f:g}' for f in freqs)} Hz")
     if l_freq or h_freq:
         if h_freq and h_freq >= nyq:
             raise ValueError(f"低通截止频率 {h_freq} Hz 必须小于奈奎斯特频率 {nyq:g} Hz")
-        raw.filter(l_freq=l_freq, h_freq=h_freq, method=method)
+        raw.filter(l_freq=l_freq, h_freq=h_freq, method=method, skip_by_annotation=("bad", "edge"))
         log(f"带通滤波：{l_freq or '—'} – {h_freq or '—'} Hz（{method}）")
     if resample and resample != raw.info["sfreq"]:
         raw.resample(resample)
@@ -167,7 +167,7 @@ def fit_ica(raw, n_components=None, method="fastica", hp=1.0, random_state=97, l
         fit_params = dict(ortho=False, extended=True)
     ica = ICA(n_components=n_components, method=method, max_iter="auto",
               random_state=random_state, fit_params=fit_params)
-    raw_for_ica = raw.copy().filter(l_freq=hp, h_freq=None) if hp else raw.copy()
+    raw_for_ica = raw.copy().filter(l_freq=hp, h_freq=None, skip_by_annotation=("bad", "edge")) if hp else raw.copy()
     ica.fit(raw_for_ica, picks="eeg")
     log(f"ICA 拟合完成：{ica.n_components_} 个成分（{method}，拟合前高通 {hp} Hz）")
     return ica, raw_for_ica
