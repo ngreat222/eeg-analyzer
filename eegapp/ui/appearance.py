@@ -2,36 +2,13 @@
 import re
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QTableWidget, QWidget
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.text import Text
 
 from .. import theme
 from .widgets import ICON_SPECS, icon
-
-
-def restyle_messages(browser, colors):
-    document = browser.document()
-    cursor = QTextCursor(document)
-    block = document.begin()
-    while block.isValid():
-        fragments = block.begin()
-        while not fragments.atEnd():
-            fragment = fragments.fragment()
-            fragments += 1
-            fmt = fragment.charFormat()
-            change = QTextCharFormat()
-            for brush, setter in ((fmt.foreground(), change.setForeground),
-                                  (fmt.background(), change.setBackground)):
-                new_color = colors.get(brush.color().name())
-                if brush.style() != Qt.NoBrush and new_color:
-                    setter(QColor(new_color))
-            if not change.isEmpty():
-                cursor.setPosition(fragment.position())
-                cursor.setPosition(fragment.position() + fragment.length(), QTextCursor.KeepAnchor)
-                cursor.mergeCharFormat(change)
-        block = block.next()
 
 
 def restyle_figure(fig, colors):
@@ -83,7 +60,6 @@ def apply_window_theme(window, mode):
                     item.setForeground(QColor(colors[brush.color().name()]))
         if window.assistant is not None:
             window.assistant.apply_theme()
-            restyle_messages(window.assistant.chat, colors)
         light = theme.MODE == "light"
         window.theme_button.setText("切换到深色" if light else "切换到亮色")
         window.theme_button.setIcon(icon("mdi6.weather-night" if light else "mdi6.white-balance-sunny"))

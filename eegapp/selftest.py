@@ -226,6 +226,8 @@ def run(out_path):
         w.close()
         return f"{len(main_window.NAV)} 页, 报告 {os.path.getsize(path) // 1024} KB, 浏览器 {name}"
     check("界面、报告导出、Qt 波形浏览器", ui)
+    from . import agent_selftest
+    check("AI 助手项目操作（模拟模型回复）", lambda: agent_selftest.run(app, tmp))
 
     ok = all(line.startswith("OK") for line in lines)
     with open(out_path, "w", encoding="utf-8") as f:

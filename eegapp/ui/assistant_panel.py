@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QEvent, QIODevice, QModelIndex, QSaveFile, QSettings, Qt, QThread, Signal)
-from PySide6.QtGui import QDrag, QIcon, QPixmap, QTextCursor, QTextDocument
+from PySide6.QtGui import QDrag, QIcon, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog,
     QFrame, QComboBox, QFormLayout, QMenu, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QStackedWidget, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTabWidget, QTableView,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialog
 from eegapp import theme
 from eegapp.core import workbench as engine, attachments
 from .widgets import WrappedLabel
+from .chat_transcript import ChatTranscript
 from . import project_bridge as bridge
 
 MIME = "application/x-biap-reference"
@@ -124,6 +125,7 @@ def table_view(data):
 class Worker(QThread):
     result = Signal(object)
     error = Signal(str)
+    progress = Signal(object)
 
     def __init__(self, args):
         super().__init__()
@@ -131,7 +133,7 @@ class Worker(QThread):
 
     def run(self):
         try:
-            self.result.emit(engine.discuss(*self.args))
+            self.result.emit(engine.discuss(*self.args, progress=self.progress.emit))
         except Exception as e:
             self.error.emit(str(e))
 
@@ -148,6 +150,7 @@ class Studio(QMainWindow):
         self.state = bridge.session_state(host) if self.bound else json.loads(path.read_text(encoding="utf8")) if path.exists() else engine.initial_state()
         self.refs, self.history, self.proposals, self.undo = [], [], [], []
         self.worker = None
+        self.review_links = []
         self.trace = []
         self.prefs = QSettings("EEGAnalyzer","Assistant")
         self.provider = self.prefs.value("provider", "DeepSeek")
@@ -210,9 +213,7 @@ class Studio(QMainWindow):
         self.welcome.setAlignment(Qt.AlignCenter)
         self.welcome.setObjectName("welcome")
         messages.addWidget(self.welcome, 1)
-        self.chat = QTextBrowser()
-        self.chat.setOpenLinks(False)
-        self.chat.anchorClicked.connect(lambda url: self.open_review() if url.toString()=="biap:review" else None)
+        self.chat = ChatTranscript()
         self.chat.hide()
         messages.addWidget(self.chat, 3)
 
@@ -240,8 +241,6 @@ class Studio(QMainWindow):
         self.refs_button.setCheckable(True)
         row.addWidget(self.refs_button)
         row.addWidget(button("附件", self.choose_files))
-        self.waiting = QLabel()
-        row.addWidget(self.waiting)
         row.addStretch()
         self.send = button("发送  ↑", self.submit, True)
         row.addWidget(self.send)
@@ -286,6 +285,14 @@ class Studio(QMainWindow):
             QLabel#heading {{font-size:15px;font-weight:600;}}
             QLabel#welcome {{font-size:18px;color:{c['text2']};font-weight:600;}}
             QTextBrowser {{border:0;border-radius:14px;background:{c['card']};font-size:14px;padding:10px;}}
+            QWidget#Transcript {{background:{c['bg']};}}
+            QFrame#UserBubble {{background:{c['soft']};border-radius:15px;}}
+            QFrame#ReplyBubble {{background:{c['card']};border:1px solid {c['line']};border-radius:15px;}}
+            QLabel#MessageAuthor {{color:{c['muted']};font-size:11px;font-weight:600;background:transparent;}}
+            QTextBrowser#MessageBody {{background:transparent;color:{c['text']};border:0;padding:0;font-size:14px;}}
+            QFrame#Activity {{background:transparent;border-left:2px solid {c['accent']};}}
+            QPushButton#ActivityHeading {{background:transparent;border:0;text-align:left;color:{c['muted']};padding:3px 0;}}
+            QPushButton#ReviewChanges {{background:{c['soft']};color:{c['on_soft']};border:0;padding:6px 12px;}}
             QFrame#composer {{border:1px solid {c['line']};border-radius:17px;background:{c['field']};}}
             QFrame#composer QPlainTextEdit {{border:0;background:transparent;}}
             QPushButton#primary {{background:{c['accent']};color:white;border-color:{c['accent']};}}
@@ -307,6 +314,8 @@ class Studio(QMainWindow):
             self.edit.setFocus()
 
     def bind_project(self):
+        if self.worker is not None:
+            self.worker.bound = object()
         self.toggle_library(False)
         self.bound=self.host.project
         self.event_refs={}
@@ -321,6 +330,7 @@ class Studio(QMainWindow):
         self.review.hide()
         self.edit.clear()
         self.chat.clear()
+        self.review_links.clear()
         self.chat.hide()
         self.welcome.show()
         self.sync_refs()
@@ -527,6 +537,7 @@ class Studio(QMainWindow):
         self.toggle_library(False)
         self.history.clear()
         self.chat.clear()
+        self.review_links.clear()
         self.chat.hide()
         self.welcome.show()
         self.review.hide()
@@ -702,22 +713,9 @@ class Studio(QMainWindow):
         dialog.exec()
 
     def say(self,who,text):
-        from html import escape
         self.welcome.hide()
         self.chat.show()
-        content=escape(text).replace("\n","<br>")
-        if who=="你":
-            self.chat.append(f'<p align="right"><span style="background-color:{theme.C["soft"]};color:{theme.C["on_soft"]};">'+content+'</span></p>')
-        elif who in engine.PROVIDERS:
-            self.chat.append(f'<p style="color:{theme.C["on_soft"]}"><small>'+escape(who)+'</small></p>')
-            cursor = self.chat.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertBlock()
-            cursor.insertMarkdown(text, QTextDocument.MarkdownFeature.MarkdownNoHTML)
-            self.chat.setTextCursor(cursor)
-        else:
-            self.chat.append(f'<p><small style="color:{theme.C["on_soft"]}">'+escape(who)+'</small><br>'+content+'</p>')
-        self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
+        self.chat.message(who, text, markdown=who in engine.PROVIDERS)
 
     def submit(self):
         q=self.edit.toPlainText().strip()
@@ -736,6 +734,10 @@ class Studio(QMainWindow):
         provider = self.provider
         state=deepcopy(self.state)
         state["attachments"]=deepcopy(self.files)
+        if bound:
+            state["local_records"] = deepcopy({rec.id: (subject, rec) for subject, rec in bound.recordings()})
+            state["local_pipeline"] = deepcopy(bound.pipeline)
+            state["quality_threshold"] = self.host.pages["预处理"].segment_limit.value()
         for info in state["attachments"].values():
             item = info.get("ica")
             if item and bound:
@@ -754,22 +756,40 @@ class Studio(QMainWindow):
         worker.image_dirs = list(self.ica_dirs)
         self.worker=worker
         self.send.setEnabled(False)
-        self.waiting.setText(f"{provider} 正在回复…")
-        def done(out):
-            if bound is not self.bound: return
-            answer, proposals, trace=out
-            self.say(provider,answer)
-            self.history.extend([{"role":"user","content":q},{"role":"assistant","content":answer}])
-            self.trace.extend(trace)
-            self.add_proposals(proposals)
-        worker.result.connect(done)
-        worker.error.connect(lambda msg:self.say("请求失败",msg) if bound is self.bound else None)
+        worker.bound = bound
+        worker.question = q
+        worker.provider = provider
+        worker.activity = self.chat.add_activity()
+        worker.progress.connect(self.on_tool_progress)
+        worker.result.connect(self.on_answer)
+        worker.error.connect(self.on_request_error)
         worker.finished.connect(self.finished)
         worker.start()
 
+    def on_tool_progress(self, event):
+        worker = self.sender()
+        if worker is self.worker and worker.bound is self.bound:
+            worker.activity.record(event)
+
+    def on_answer(self, out):
+        worker = self.sender()
+        if worker is not self.worker or worker.bound is not self.bound:
+            return
+        worker.activity.finish()
+        answer, proposals, trace = out
+        self.say(worker.provider, answer)
+        self.history.extend([{"role":"user","content":worker.question},{"role":"assistant","content":answer}])
+        self.trace.extend(trace)
+        self.add_proposals(proposals)
+
+    def on_request_error(self, msg):
+        worker = self.sender()
+        if worker is self.worker and worker.bound is self.bound:
+            worker.activity.finish(error=True)
+            self.say("请求失败", msg)
+
     def finished(self):
         self.send.setEnabled(True)
-        self.waiting.clear()
 
     def demo(self):
         """完全本地的交互示例，清楚区分远端模型回复。"""
@@ -827,7 +847,24 @@ class Studio(QMainWindow):
             self.pending.addItem(it)
         if first_new<len(self.proposals):
             self.pending.setCurrentRow(first_new)
-            self.chat.append(f'<p><a href="biap:review">查看建议（{len(self.proposals)} 项待选）</a></p>')
+            group = len(self.review_links)
+            for prop in self.proposals[first_new:]:
+                prop["_review_group"] = group
+            link = self.chat.review_button(len(self.proposals)-first_new, lambda: self.review_group(group))
+            self.review_links.append((link, group))
+
+    def review_group(self, group):
+        for i, prop in enumerate(self.proposals):
+            if prop.get("_review_group") == group:
+                self.pending.setCurrentRow(i)
+                self.open_review()
+                return
+
+    def update_review_links(self):
+        for link, group in self.review_links:
+            count = sum(p.get("_review_group") == group for p in self.proposals)
+            link.setEnabled(bool(count))
+            link.setText(f"预览修改（{count} 项）" if count else "已处理")
 
     def preview(self,index):
         while self.tabs.count():
@@ -874,6 +911,7 @@ class Studio(QMainWindow):
         if i >= 0:
             self.proposals.pop(i)
             self.pending.takeItem(i)
+            self.update_review_links()
             self.preview(self.pending.currentRow())
 
     def accept(self):
@@ -909,7 +947,8 @@ class Studio(QMainWindow):
         self.preview(self.pending.currentRow())
         self.review.hide()
         msg=("已写回「"+self.bound.name+"」：" if self.bound else "已采用：")+"、".join(titles)
-        self.say("工作副本",msg)
+        self.update_review_links()
+        self.say("当前项目" if self.bound else "工作副本",msg)
         self.history.append({"role":"user","content":msg})
 
     def write_project(self, chosen):
