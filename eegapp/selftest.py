@@ -175,6 +175,34 @@ def run(out_path):
         return " / ".join(out)
     check("解码、跨时间泛化、IEM、RSA", dec)
 
+    def single_subject():
+        import numpy as np
+        from PySide6.QtCore import QSettings
+        from .ui.main_window import MainWindow
+        project = pj.make_demo_project(os.path.join(tmp, "single"), n_subs=1, n_per_cond=32, log=quiet)
+        name = project.subjects[0].name
+        window = MainWindow(settings=QSettings(os.path.join(tmp, "single.ini"), QSettings.IniFormat))
+        try:
+            window.set_project(project, quiet=True)
+            for key in ("ERP", "时频", "解码", "RSA"):
+                window.goto(key)
+                page = window.pages[key]
+                assert page.scope.count() == 1 and page.scope.currentData() == name, key
+                if key in ("解码", "RSA"):
+                    assert not page.group_statistics.isEnabled(), key
+            dd = analysis.decoding_data(project, name, "朝向", [str(i * 45) for i in range(8)], log=quiet)
+            for method, array in (("逐时间点解码", "accuracy"), ("反向编码模型 IEM", "mae"), ("RSA", "similarity")):
+                if method == "RSA":
+                    res = analysis.rsa(dd, "线性距离", "", 20, 20, log=quiet)
+                else:
+                    res = analysis.decode(dd, method, 2, 20, 20, 2, 1, num_perm=100, log=quiet)
+                assert res.arrays[array].shape[0] == 1 and np.isfinite(res.arrays[array]).all(), method
+                assert all("显著时间段" not in title for title, _, _ in res.metrics), method
+        finally:
+            window.close()
+        return "四个分析页默认选中单人；解码、IEM、RSA 输出有限的个体指标"
+    check("单被试分析范围与个体结果", single_subject)
+
     def rsa_options():
         from .core import advanced
         out = []

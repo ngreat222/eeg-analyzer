@@ -303,12 +303,12 @@ class Project:
         rank = {n: i for i, n in enumerate(order)}
         return sorted(((n, count[n], len(subs)) for n in order), key=lambda x: (-x[1], rank[x[0]]))
 
-    def label_columns(self):
+    def label_columns(self, scope=None):
         """可用于解码 / RSA 的标签：条件本身，加上分段数据 metadata 里的列。"""
         cols = ["条件"]
         done = self.done_subjects()
         if done:
-            md = self.epochs(done[0].name).metadata
+            md = self.epochs(scope if scope and scope != "全组" else done[0].name).metadata
             if md is not None:
                 cols += [c for c in md.columns if c != "条件" and md[c].nunique() >= 2]
         return cols

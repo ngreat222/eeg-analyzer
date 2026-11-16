@@ -182,20 +182,20 @@ def refresh_scope(cb, project):
     cb.clear()
     if project is not None:
         done = project.done_subjects()
-        if done:
+        if len(done) > 1:
             cb.addItem(f"全组（{len(done)} 人）", GROUP)
-            for s in done:
-                cb.addItem(f"单个被试 · {s.name}", s.name)
+        for s in done:
+            cb.addItem(f"单个被试 · {s.name}", s.name)
     i = cb.findData(cur)
     cb.setCurrentIndex(i if i >= 0 else 0)
     cb.blockSignals(False)
 
 
-def label_values(project, label_name):
+def label_values(project, label_name, scope=None):
     done = project.done_subjects()
     if not done:
         return []
-    ep = project.epochs(done[0].name)
+    ep = project.epochs(scope if scope and scope != GROUP else done[0].name)
     if label_name == "条件":
         return list(ep.event_id)
     vals = list(dict.fromkeys(ep.metadata[label_name].astype(str)))

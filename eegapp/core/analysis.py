@@ -380,8 +380,9 @@ def decode(dd, method, navg, time_win, time_step, nfolds, nrepeats, use_cluster=
                                                               title=f"{dd.label_name}：逐时间点解码")))
         m = acc.mean(0)
         k = int(np.argmax(m))
-        res.metrics += [("峰值正确率", f"{m[k]:.1%}", f"{t[k] * 1000:.0f} ms，机会水平 {chance:.1%}"),
-                        ("显著时间段", _sig_text(mask, t) if mask is not None else "需要 2 名以上被试", "")]
+        res.metrics.append(("峰值正确率", f"{m[k]:.1%}", f"{t[k] * 1000:.0f} ms，机会水平 {chance:.1%}"))
+        if mask is not None:
+            res.metrics.append(("组水平显著时间段", _sig_text(mask, t), ""))
         res.arrays = dict(times=t, accuracy=acc, **({"significant": mask} if mask is not None else {}))
     elif method == "跨时间泛化":
         acc = advanced.ct_decoding(dd, navg, time_win, time_step, nfolds, nrepeats, n_jobs=n_jobs)
@@ -401,13 +402,14 @@ def decode(dd, method, navg, time_win, time_step, nfolds, nrepeats, use_cluster=
                                                        f"{dd.label_name}：IEM 重建（ΔMAE 越大越好）")))
         dm = np.mean(null) - mae.mean(0)
         k = int(np.argmax(dm))
-        res.metrics += [("峰值 ΔMAE", f"{dm[k]:.2f}", f"{t[k] * 1000:.0f} ms（单位：类别步长）"),
-                        ("显著时间段", _sig_text(mask, t) if mask is not None else "需要 2 名以上被试", "")]
+        res.metrics.append(("峰值 ΔMAE", f"{dm[k]:.2f}", f"{t[k] * 1000:.0f} ms（单位：类别步长）"))
+        if mask is not None:
+            res.metrics.append(("组水平显著时间段", _sig_text(mask, t), ""))
         res.arrays = dict(times=t, mae=mae, null_mae=null)
     else:
         raise ValueError(method)
     if n_sub < 2:
-        res.notes.append("只有 1 名被试，结果没有做组水平统计检验。")
+        res.notes.append("本次展示该被试的个体结果。")
     return res
 
 
@@ -428,8 +430,11 @@ def rsa(dd, model_kind, model_file, time_win, time_step, distance="correlation",
     res.figures.append(("模型 RDM", advanced.plot_rdm(model, dd.class_names, f"模型 RDM：{model_kind}")))
     res.figures.append((f"脑电 RDM（{t[k] * 1000:.0f} ms）",
                         advanced.plot_rdm(rdms[:, k].mean(0), dd.class_names, f"脑电 RDM（{t[k] * 1000:.0f} ms，峰值时刻）")))
-    res.metrics += [("峰值相关", f"r = {r.mean(0)[k]:.2f}", f"{t[k] * 1000:.0f} ms"),
-                    ("显著时间段", _sig_text(mask, t) if mask is not None else "需要 2 名以上被试", ""),
-                    ("每类试次", str(n_min), "各被试各类别取相同数量")]
+    res.metrics.append(("峰值相关", f"r = {r.mean(0)[k]:.2f}", f"{t[k] * 1000:.0f} ms"))
+    if mask is not None:
+        res.metrics.append(("组水平显著时间段", _sig_text(mask, t), ""))
+    else:
+        res.notes.append("本次展示该被试的个体结果。")
+    res.metrics.append(("每类试次", str(n_min), "各类别取相同试次数"))
     res.arrays = dict(times=t, similarity=r, rdms=rdms, model=model)
     return res

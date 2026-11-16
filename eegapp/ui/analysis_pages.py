@@ -188,9 +188,10 @@ class _LabelPage(_AnalysisPage):
         self.label = s.row("标签", combo([]))
         self.classes = s.row("类别", CheckList(140))
         self.label.currentTextChanged.connect(self._classes)
+        self.scope.currentIndexChanged.connect(self._scope_changed)
 
     def _stats_section(self, stats_t=(0.0, 1.0)):
-        s = self.section("统计检验")
+        s = self.group_statistics = self.section("组水平统计检验")
         self.cluster = s.widget(checkbox("cluster 置换检验（否则逐点 t 检验）", True))
         self.p = s.row("p 阈值", fspin(0.05, 0.0001, 0.5, 0.01, 3))
         self.niter = s.row("置换次数", ispin(1000, 50, 100000, 100))
@@ -201,11 +202,17 @@ class _LabelPage(_AnalysisPage):
         super().on_show()
         p = self.project
         refresh_scope(self.scope, p)
+        self._scope_changed()
+
+    def _scope_changed(self):
+        p = self.project
+        scope = self.scope.currentData()
+        self.group_statistics.setEnabled(scope == GROUP)
         if p and p.done_subjects():
             cur = self.label.currentText()
             self.label.blockSignals(True)
             self.label.clear()
-            cols = p.label_columns()
+            cols = p.label_columns(scope)
             self.label.addItems(cols)
             if cur in cols:
                 self.label.setCurrentText(cur)
@@ -217,7 +224,7 @@ class _LabelPage(_AnalysisPage):
     def _classes(self):
         p = self.project
         if p and p.done_subjects() and self.label.currentText():
-            self.classes.set_items(label_values(p, self.label.currentText()), default_all=True)
+            self.classes.set_items(label_values(p, self.label.currentText(), self.scope.currentData()), default_all=True)
 
     def _dd(self):
         p = self.project
