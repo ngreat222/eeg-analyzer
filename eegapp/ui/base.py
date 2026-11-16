@@ -141,7 +141,7 @@ class BasePage(QWidget):
     def run(self, title, fn, done=None):
         if hasattr(self, "content"):
             self.show_settings(False)
-        self.ctx.runner.run(title, fn, done)
+        return self.ctx.runner.run(title, fn, done)
 
     def need_project(self, need_done=True):
         p = self.project

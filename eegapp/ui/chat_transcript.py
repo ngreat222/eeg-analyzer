@@ -159,7 +159,10 @@ class ChatTranscript(QScrollArea):
         return activity
 
     def review_button(self, count, callback):
-        button = QPushButton(f"预览修改（{count} 项）")
+        return self.action_button(f"预览修改（{count} 项）", callback)
+
+    def action_button(self, text, callback):
+        button = QPushButton(text)
         button.setObjectName("ReviewChanges")
         button.clicked.connect(callback)
         self.rows.insertWidget(self.rows.count()-1, button, 0, Qt.AlignLeft)

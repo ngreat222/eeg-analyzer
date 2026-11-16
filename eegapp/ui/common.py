@@ -72,6 +72,7 @@ def install_log_capture():
 class _Signals(QObject):
     done = Signal(object)
     failed = Signal(str, str)
+    settled = Signal(object, str)
 
 
 class _Task(QRunnable):
@@ -79,6 +80,7 @@ class _Task(QRunnable):
         super().__init__()
         self.fn = fn
         self.signals = _Signals()
+        self.observed = False
 
     def run(self):
         try:
@@ -116,8 +118,12 @@ class TaskRunner(QObject):
                 try:
                     on_done(res)
                 except Exception as e:  # noqa: BLE001
-                    show_error(f"{title}：显示结果时出错", str(e), traceback.format_exc())
+                    task.signals.settled.emit(None, str(e))
+                    if not task.observed:
+                        show_error(f"{title}：显示结果时出错", str(e), traceback.format_exc())
+                    return
             log(f"✓ {title} 完成")
+            task.signals.settled.emit(res, "")
 
         def failed(msg, tb):
             self._finish(task)
@@ -125,11 +131,14 @@ class TaskRunner(QObject):
             log(tb)
             if on_error:
                 on_error(msg)
-            show_error(f"{title} 出错", msg, tb)
+            task.signals.settled.emit(None, msg)
+            if not task.observed:
+                show_error(f"{title} 出错", msg, tb)
 
         task.signals.done.connect(done)
         task.signals.failed.connect(failed)
         self.pool.start(task)
+        return task
 
     def _finish(self, task):
         self._tasks.discard(task)

@@ -219,13 +219,13 @@ class EventsPage(BasePage):
         self.empty.setVisible(not len(df))
         self._set_fig(ev.plot_timeline(df, h["dur"], "事件在记录中的位置") if len(df) else None)
 
-    def _set_fig(self, fig):
+    def _set_fig(self, fig, title="时间线"):
         if self._fig is not None:
             self._fig.setParent(None)
             self._fig.deleteLater()
             self._fig = None
         if fig is not None:
-            self._fig = FigureCard("时间线", fig)
+            self._fig = FigureCard(title, fig)
             self.fig_slot.addWidget(self._fig)
 
     def _selected_kinds(self):

@@ -633,10 +633,10 @@ class PreprocessPage(BasePage):
             return res
 
         def done(res):
-            self.view.show_result(res)
             self._after(f"{r.id} 预处理完成")
+            self.view.show_result(res)
 
-        self.run(f"处理 {r.id}", work, done)
+        return self.run(f"处理 {r.id}", work, done)
 
     def process_all(self):
         if not self.need_project(need_done=False):

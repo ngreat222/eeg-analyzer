@@ -263,9 +263,10 @@ class Project:
             self._cache[name] = read_epochs(self.path(s.epochs_file))
         return self._cache[name]
 
-    def store_epochs(self, subj, epochs):
+    def store_epochs(self, subj, epochs, relative_path=None):
         os.makedirs(self.epochs_dir, exist_ok=True)
-        rel = os.path.join("epochs", f"{subj.name}-epo.fif")
+        rel = relative_path or os.path.join("epochs", f"{subj.name}-epo.fif")
+        os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
         save_epochs(epochs, os.path.join(self.folder, rel))
         subj.epochs_file = rel
         subj.status = STATUS_DONE
@@ -813,7 +814,7 @@ def _key(rec, name):
     return f"{rec.condition}/{name}" if rec.condition else str(name)
 
 
-def epoch_subject(project, subj, log=print):
+def epoch_subject(project, subj, log=print, relative_path=None):
     """把一个被试所有预处理好的记录分段，合并成该被试的分段数据。
 
     有条件的记录，事件名前加条件，例如“文本/刺激出现”；分析时可以按“文本”或“刺激出现”选取。
@@ -889,7 +890,7 @@ def epoch_subject(project, subj, log=print):
     if not parts:
         raise ValueError(f"{subj.name}：所有分段都被剔除了。可以调高振幅剔除阈值，或检查预处理")
     ep = mne.concatenate_epochs(parts, verbose=False) if len(parts) > 1 else parts[0]
-    project.store_epochs(subj, ep)
+    project.store_epochs(subj, ep, relative_path)
     log(f"{subj.name}：分段完成，" + "，".join(f"{k} {v}" for k, v in subj.n_trials.items()))
     return ep
 

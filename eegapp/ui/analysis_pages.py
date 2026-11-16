@@ -34,6 +34,12 @@ def _pair(a, b):
 
 
 class _AnalysisPage(BasePage):
+    record_scope = None
+
+    @property
+    def project(self):
+        return self.record_scope or super().project
+
     icon_name = "mdi6.chart-line"
     empty_title = ""
     empty_body = ""
@@ -114,7 +120,7 @@ class ERPPage(_AnalysisPage):
                     factor_levels=[int(x) for x in parse_floats(self.levels.text())] or None,
                     topo_times=self.topo.text().strip())
         p = self.project
-        self.run("ERP 分析", lambda: analysis.erp(p, log=log, **args), self.show_res)
+        return self.run("ERP 分析", lambda: analysis.erp(p, log=log, **args), self.show_res)
 
 
 # ====================================================================== 时频
@@ -171,7 +177,7 @@ class TFRPage(_AnalysisPage):
                  metric_band=(self.mb0.value(), self.mb1.value()), metric_win=(self.mt0.value(), self.mt1.value()),
                  do_stats=self.do_stat.isChecked(), p=self.p.value(), cluster_p=self.p.value(),
                  n_iter=self.niter.value(), decim=self.decim.value())
-        self.run("时频分析", lambda: analysis.tfr(p, log=log, **a), self.show_res)
+        return self.run("时频分析", lambda: analysis.tfr(p, log=log, **a), self.show_res)
 
 
 # ====================================================================== 解码 / RSA 共用的数据选择
@@ -256,7 +262,7 @@ class DecodePage(_LabelPage):
                  use_cluster=self.cluster.isChecked(), p=self.p.value(), cluster_p=self.p.value(),
                  n_iter=self.niter.value(), stats_time=(self.s0.value(), self.s1.value()),
                  circular=self.circ.isChecked(), num_perm=self.nperm.value(), n_jobs=self.jobs.value())
-        self.run(a["method"], lambda: analysis.decode(mk(), log=log, **a), self.show_res)
+        return self.run(a["method"], lambda: analysis.decode(mk(), log=log, **a), self.show_res)
 
 
 class RSAPage(_LabelPage):
@@ -294,4 +300,4 @@ class RSAPage(_LabelPage):
                  time_step=self.step.value(), distance=self.dist.currentText(), use_cluster=self.cluster.isChecked(),
                  p=self.p.value(), cluster_p=self.p.value(), n_iter=self.niter.value(),
                  stats_time=(self.s0.value(), self.s1.value()))
-        self.run("RSA", lambda: analysis.rsa(mk(), log=log, **a), self.show_res)
+        return self.run("RSA", lambda: analysis.rsa(mk(), log=log, **a), self.show_res)

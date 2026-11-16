@@ -128,8 +128,21 @@ class Worker(QThread):
     result = Signal(object)
     error = Signal(str)
     progress = Signal(object)
+    workflow_requested = Signal(object)
     view_requested = Signal(object)
 
+    def workflow_call(self, op, data=None):
+        reply = Queue(1)
+        self.workflow_requested.emit((op, data, reply))
+        while not self.isInterruptionRequested():
+            try:
+                result = reply.get(timeout=.25)
+            except Empty:
+                continue
+            if isinstance(result, Exception):
+                raise ValueError(str(result))
+            return result
+        raise ValueError("工作流已停止。")
     def request_view(self, target):
         reply = Queue(1)
         self.view_requested.emit((target, reply))
@@ -164,6 +177,7 @@ class Studio(QMainWindow):
         self.state = bridge.session_state(host) if self.bound else json.loads(path.read_text(encoding="utf8")) if path.exists() else engine.initial_state()
         self.refs, self.history, self.proposals, self.undo = [], [], [], []
         self.worker = None
+        self.workflow = None
         self.desktop = None
         self.review_links = []
         self.trace = []
@@ -204,6 +218,7 @@ class Studio(QMainWindow):
         more = QPushButton("更多")
         menu = QMenu(more)
         if host:
+            menu.addAction("运行当前记录到导出…", self.draft_record_workflow)
             menu.addAction("核对已保存参数", self.show_saved_parameters)
         if sys.platform == "win32":
             menu.addAction("授权操作其他软件窗口…", self.choose_desktop)
@@ -214,6 +229,15 @@ class Studio(QMainWindow):
         more.setMenu(menu)
         head.addWidget(more)
         lay.addLayout(head)
+        self.workflow_bar = QWidget()
+        flow_row = QHBoxLayout(self.workflow_bar)
+        self.workflow_pause = QPushButton("暂停在下一步")
+        self.workflow_pause.setCheckable(True)
+        self.workflow_pause.toggled.connect(self.toggle_workflow_pause)
+        flow_row.addWidget(self.workflow_pause)
+        flow_row.addWidget(button("停止工作流", self.stop_workflow))
+        lay.addWidget(self.workflow_bar)
+        self.workflow_bar.hide()
 
         self.middle = QStackedWidget()
         lay.addWidget(self.middle, 1)
@@ -356,6 +380,7 @@ class Studio(QMainWindow):
             self.desktop_indicator.show()
 
     def bind_project(self):
+        self.stop_workflow()
         self.stop_desktop()
         if self.worker is not None:
             self.worker.bound = object()
@@ -814,6 +839,10 @@ class Studio(QMainWindow):
         worker=Worker(args)
         if bound:
             state["show_parameters"] = worker.request_view
+            from .record_workflow import RecordWorkflow, current_record
+            self.workflow = RecordWorkflow(self, current_record(self.host))
+            state["workflow_call"] = worker.workflow_call
+            worker.workflow_requested.connect(self.dispatch_workflow)
             worker.view_requested.connect(self.open_parameter_view)
         worker.image_dirs = list(self.ica_dirs)
         self.worker=worker
@@ -827,6 +856,32 @@ class Studio(QMainWindow):
         worker.error.connect(self.on_request_error)
         worker.finished.connect(self.finished)
         worker.start()
+
+    def dispatch_workflow(self, request):
+        if self.sender() is not self.worker or not self.workflow or self.worker.bound is not self.bound:
+            request[2].put(ValueError("该任务已结束或项目已切换。"))
+            return
+        self.workflow.dispatch(*request)
+
+    def draft_record_workflow(self):
+        if not self.bound:
+            return self.warn("请先打开有连续记录的项目。")
+        if self.worker and self.worker.isRunning():
+            return self.warn("当前请求仍在进行。")
+        self.toggle_library(False)
+        self.edit.insertPlainText("请把当前记录从预处理做到分析并导出报告。")
+        self.edit.setFocus()
+
+    def toggle_workflow_pause(self, paused):
+        self.workflow_pause.setText("继续运行" if paused else "暂停在下一步")
+        if self.workflow and not paused:
+            self.workflow.resume()
+
+    def stop_workflow(self):
+        if self.workflow:
+            self.workflow.cancel()
+            if self.worker and self.worker.isRunning():
+                self.worker.requestInterruption()
 
     def open_parameter_view(self, request):
         target, reply = request
@@ -880,6 +935,9 @@ class Studio(QMainWindow):
             self.say("请求失败", msg)
 
     def finished(self):
+        self.workflow = None
+        self.workflow_bar.hide()
+        self.workflow_pause.setChecked(False)
         self.stop_desktop()
         self.send.setEnabled(True)
 

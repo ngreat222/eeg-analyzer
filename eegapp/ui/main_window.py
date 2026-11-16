@@ -287,6 +287,9 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 项目
     def set_project(self, p, quiet=False):
+        if self.runner.busy and p is not self.project:
+            QMessageBox.information(self, "计算进行中", "当前步骤结束后可以切换项目。")
+            return
         if p is not self.project:
             page = self.pages["预处理"]
             page.raw = page.ica = page.raw_ica = page._sig = page.fitted_ica = None

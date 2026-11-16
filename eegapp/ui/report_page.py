@@ -33,7 +33,9 @@ class ReportPage(BasePage):
 
     def on_show(self):
         super().on_show()
-        items = self.ctx.reports
+        self.show_items(self.ctx.reports)
+
+    def show_items(self, items):
         old = self.scroll.takeWidget()
         if old is not None and old is not self.empty:
             old.deleteLater()
