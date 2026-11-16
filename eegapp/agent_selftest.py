@@ -79,6 +79,41 @@ def run(app, folder):
         with patch.object(panel, "warn", side_effect=AssertionError):
             panel.revert()
         assert pj.Project.load(project.folder).pipeline.notch == 60
-        return "零拖入、读取项目、示例 EEG 质量检测、6 次工具调用、选中写回、撤销"
+        changes = {"陷波": {"去除谐波": True}, "高低通": {"高通Hz": 1.0},
+                   "重采样": {"目标采样率Hz": 250.0}, "重参考": {"方式": "平均参考"},
+                   "事件分段": {"剔除阈值µV": 200.0}}
+        panel.current_snapshot()
+        selected = []
+        for name, params in changes.items():
+            _, prop = workbench.run_tool(panel.state, [("step", name)], "edit_step",
+                                         dict(target=name, params=params, title=name))
+            selected.append(prop)
+        panel.add_proposals(selected)
+        for i in range(1, panel.pending.count()):
+            panel.pending.item(i).setCheckState(Qt.Checked)
+        with patch.object(panel, "warn", side_effect=AssertionError):
+            panel.accept()
+        receipt = panel.history[-1]["content"]
+        assert "已重新读取 project.json" in receipt and "不一致" not in receipt and "200" in receipt
+        responses.clear()
+        calls[:] = [("verify_saved_parameters", {"target": ""}),
+                    ("show_parameters", {"target": "事件分段"}), ("show_parameters", {"target": "重采样"})]
+        with patch.object(panel, "connection", return_value=("", model, "test", "http://localhost/biap-test")), \
+                patch.object(workbench, "urlopen", scripted):
+            panel.edit.setPlainText("核对保存结果，带我看看分段和重采样参数。")
+            panel.send.click()
+            deadline = time.monotonic() + 40
+            while not panel.send.isEnabled() and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(.01)
+        assert len(responses) == 3, panel.chat.toPlainText()
+        for name, params in changes.items():
+            for label, value in params.items():
+                assert responses[0]["已保存参数"][name][label] == value
+        assert responses[1]["界面参数"]["剔除阈值µV"] == 200
+        assert responses[2]["界面参数"]["目标采样率Hz"] == 250
+        assert window.stack.currentWidget() is window.pages["预处理"]
+        assert window.pages["预处理"].group_picker.currentText() == "滤波"
+        return "质量检测、选择性写回、撤销、五项参数磁盘复核、助手打开分段和滤波参数页"
     finally:
         window.close()

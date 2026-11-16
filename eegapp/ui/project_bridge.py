@@ -26,6 +26,42 @@ ANALYSIS = {"ERP":{"通道":"ch","指标起点秒":"m0","指标终点秒":"m1"},
             "RSA":{"时间窗采样点":"win","步长采样点":"step"}}
 TABULAR={".csv",".tsv",".xlsx",".xls"}
 TEXT={".txt",".md",".json",".pdf",".docx"}
+
+def saved_parameters(path, target=""):
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    pipeline = data["pipeline"]
+    analysis = data.get("assistant_data", {}).get("analysis", {})
+    values = {name: {label: pipeline[attr] for label, attr, _ in fields if attr in pipeline}
+              for name, fields in PRE.items()}
+    values.update({name: {label: analysis[name][label] for label in fields
+                          if label in analysis.get(name, {})} for name, fields in ANALYSIS.items()})
+    if target and target not in values:
+        raise ValueError("没有可核对的步骤参数：" + target)
+    return {target: values[target]} if target else values
+
+
+def requested_fields(proposal):
+    after = proposal["after"]["params"]
+    return proposal.get("fields", [key for key in after if after[key] != proposal["before"]["params"][key]])
+
+
+def parameter_receipt(path, proposals):
+    expected = {(p["name"], field): p["after"]["params"][field]
+                for p in proposals if p["kind"] == "step" for field in requested_fields(p)}
+    if not expected:
+        return ""
+    saved = saved_parameters(path)
+    lines = ["已重新读取 project.json："]
+    for (name, field), requested in expected.items():
+        params = saved[name]
+        if field not in params:
+            value = "未保存"
+        else:
+            actual = params[field]
+            value = ("开启" if actual else "关闭") if isinstance(actual, bool) else str(actual)
+        status = "" if field in params and params[field] == requested else "（与预览不一致）"
+        lines.append(f"{name} · {field}：{value}{status}")
+    return "\n".join(lines)
 def read_control(w):
     if isinstance(w,QLineEdit): return w.text()
     if isinstance(w,QCheckBox): return w.isChecked()
@@ -164,6 +200,7 @@ def apply_selected(host, proposals, transient):
     staged.subjects=deepcopy(p.subjects)
     staged.assistant_data=deepcopy(p.assistant_data)
     old={s["name"]:s["params"] for s in before}
+    requested = {(p["name"], field) for p in proposals if p["kind"] == "step" for field in requested_fields(p)}
     order=[s["name"] for s in state["flow"] if s["name"] in pj.STEPS]
     if [s["name"] for s in state["flow"]]!=["导入记录","坏段与通道检查",*order,"ICA","事件分段",*ANALYSIS,"报告导出"]:
         raise ValueError("当前执行引擎支持调整五项连续预处理步骤的顺序；导入、ICA、分段和分析的位置固定。")
@@ -174,13 +211,18 @@ def apply_selected(host, proposals, transient):
     for step in state["flow"]:
         name=step["name"]
         for label,value in step["params"].items():
-            if value==old[name][label]: continue
+            if value == old[name][label] and (name, label) not in requested:
+                continue
             if name in ANALYSIS:
                 w=getattr(host.pages[name],ANALYSIS[name][label])
+                if value == old[name][label] and staged.assistant_data.get("analysis", {}).get(name, {}).get(label) == value:
+                    continue
                 staged.assistant_data.setdefault("analysis",{}).setdefault(name,{})[label]=value
             else:
                 attr,field=next((a,b) for k,a,b in PRE[name] if k==label)
                 w=getattr(host.pages["事件" if name=="事件分段" else "预处理"],field)
+                if value == old[name][label] and getattr(staged.pipeline, attr) == value:
+                    continue
                 setattr(staged.pipeline,attr,value)
                 if name=="事件分段": epoch_changed=True
                 else: pre_changed=True

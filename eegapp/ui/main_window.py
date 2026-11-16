@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         bar.addWidget(spacer)
         work_action = bar.addAction(icon("mdi6.view-dashboard-outline", C["text2"]), "工作窗口")
+        self.work_action = work_action
         work_action.setCheckable(True)
         work_action.setChecked(True)
         work_action.setShortcut("Ctrl+1")

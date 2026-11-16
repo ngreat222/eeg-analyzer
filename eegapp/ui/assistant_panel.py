@@ -3,7 +3,9 @@ import csv
 import json
 import os
 import sys
+from queue import Empty, Queue
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QEvent, QIODevice, QModelIndex, QSaveFile, QSettings, Qt, QThread, Signal)
@@ -126,6 +128,18 @@ class Worker(QThread):
     result = Signal(object)
     error = Signal(str)
     progress = Signal(object)
+    view_requested = Signal(object)
+
+    def request_view(self, target):
+        reply = Queue(1)
+        self.view_requested.emit((target, reply))
+        try:
+            result = reply.get(timeout=12)
+        except Empty:
+            raise ValueError("工作窗口忙，未能确认打开参数页。")
+        if isinstance(result, Exception):
+            raise ValueError(str(result))
+        return result
 
     def __init__(self, args):
         super().__init__()
@@ -150,6 +164,7 @@ class Studio(QMainWindow):
         self.state = bridge.session_state(host) if self.bound else json.loads(path.read_text(encoding="utf8")) if path.exists() else engine.initial_state()
         self.refs, self.history, self.proposals, self.undo = [], [], [], []
         self.worker = None
+        self.desktop = None
         self.review_links = []
         self.trace = []
         self.prefs = QSettings("EEGAnalyzer","Assistant")
@@ -188,6 +203,10 @@ class Studio(QMainWindow):
         head.addWidget(self.models_button)
         more = QPushButton("更多")
         menu = QMenu(more)
+        if host:
+            menu.addAction("核对已保存参数", self.show_saved_parameters)
+        if sys.platform == "win32":
+            menu.addAction("授权操作其他软件窗口…", self.choose_desktop)
         menu.addAction("新对话", self.reset_chat)
         menu.addAction("试试看（离线示例）", self.demo)
         menu.addAction("查看本次工具记录", lambda: self.inspect("工具记录", self.trace))
@@ -231,6 +250,9 @@ class Studio(QMainWindow):
         chiprow.addWidget(button("移除引用", self.clear_refs))
         self.attachbar.hide()
         compose.addWidget(self.attachbar)
+        self.desktop_indicator = button("", self.stop_desktop)
+        self.desktop_indicator.hide()
+        compose.addWidget(self.desktop_indicator)
         self.edit = Composer()
         self.edit.setMaximumHeight(92)
         self.edit.setPlaceholderText("直接问我，也可以把流程、步骤或文件拖到这里…")
@@ -313,7 +335,28 @@ class Studio(QMainWindow):
         elif not visible:
             self.edit.setFocus()
 
+    def stop_desktop(self):
+        if self.desktop:
+            self.desktop.revoked.set()
+            self.desktop = None
+        self.desktop_indicator.hide()
+
+    def choose_desktop(self):
+        from .desktop_access import DesktopAccess
+        if self.worker and self.worker.isRunning():
+            return self.warn("请在发送下一条消息前选择窗口。")
+        try:
+            session = DesktopAccess.choose(self)
+        except Exception as exc:
+            return self.warn(exc)
+        if session:
+            self.stop_desktop()
+            self.desktop = session
+            self.desktop_indicator.setText("停止授权 · " + session.window["title"])
+            self.desktop_indicator.show()
+
     def bind_project(self):
+        self.stop_desktop()
         if self.worker is not None:
             self.worker.bound = object()
         self.toggle_library(False)
@@ -343,6 +386,15 @@ class Studio(QMainWindow):
         for name, rid in self.event_refs.items():
             latest["tables"][name]=bridge.event_table(self.bound,self.bound.get_rec(rid)[1])
         self.state=latest
+
+    def show_saved_parameters(self):
+        if not self.bound:
+            return self.warn("请先打开一个项目。")
+        try:
+            saved = bridge.saved_parameters(self.bound.json_path)
+        except (OSError, ValueError, KeyError) as exc:
+            return self.warn(exc)
+        self.inspect(f"{self.bound.name} · 已保存参数", saved)
 
     def project_ref(self, folder, kind, name):
         if not self.bound or self.host.project is not self.bound or self.bound.folder!=folder:
@@ -535,6 +587,7 @@ class Studio(QMainWindow):
         if self.worker and self.worker.isRunning():
             return self.warn("请等本轮请求结束。")
         self.toggle_library(False)
+        self.stop_desktop()
         self.history.clear()
         self.chat.clear()
         self.review_links.clear()
@@ -733,8 +786,14 @@ class Studio(QMainWindow):
             except Exception as exc: return self.warn(exc)
         provider = self.provider
         state=deepcopy(self.state)
+        if self.desktop:
+            if self.desktop.connection != connection[1:]:
+                self.stop_desktop()
+                return self.warn("模型连接已更改，请重新选择要授权的窗口。")
+            state["desktop"] = self.desktop
         state["attachments"]=deepcopy(self.files)
         if bound:
+            state["read_saved"] = partial(bridge.saved_parameters, bound.json_path)
             state["local_records"] = deepcopy({rec.id: (subject, rec) for subject, rec in bound.recordings()})
             state["local_pipeline"] = deepcopy(bound.pipeline)
             state["quality_threshold"] = self.host.pages["预处理"].segment_limit.value()
@@ -753,6 +812,9 @@ class Studio(QMainWindow):
         self.say("你",q)
         args=(state,list(self.refs),list(self.history),q,*connection)
         worker=Worker(args)
+        if bound:
+            state["show_parameters"] = worker.request_view
+            worker.view_requested.connect(self.open_parameter_view)
         worker.image_dirs = list(self.ica_dirs)
         self.worker=worker
         self.send.setEnabled(False)
@@ -765,6 +827,35 @@ class Studio(QMainWindow):
         worker.error.connect(self.on_request_error)
         worker.finished.connect(self.finished)
         worker.start()
+
+    def open_parameter_view(self, request):
+        target, reply = request
+        try:
+            if self.sender() is not self.worker or self.worker.bound is not self.host.project:
+                raise ValueError("项目已切换。")
+            if target in bridge.PRE:
+                page_name = "事件" if target == "事件分段" else "预处理"
+                fields = {label: widget for label, _, widget in bridge.PRE[target]}
+            elif target in bridge.ANALYSIS:
+                page_name, fields = target, bridge.ANALYSIS[target]
+            else:
+                raise ValueError("该步骤没有可打开的参数页。")
+            page = self.host.pages[page_name]
+            self.host.work_action.setChecked(True)
+            if self.host.stack.currentWidget() is not page:
+                self.host.goto(page_name)
+            page.show_settings(True)
+            control = getattr(page, next(iter(fields.values())))
+            for index in range(page.groups.count()):
+                tab = page.groups.widget(index)
+                if tab.isAncestorOf(control):
+                    page.group_picker.setCurrentIndex(index)
+                    tab.ensureWidgetVisible(control)
+                    break
+            reply.put({"已打开工作窗口": page.title, "设置类别": page.group_picker.currentText(),
+                       "界面参数": {label: bridge.read_control(getattr(page, field)) for label, field in fields.items()}})
+        except Exception as exc:
+            reply.put(exc)
 
     def on_tool_progress(self, event):
         worker = self.sender()
@@ -789,6 +880,7 @@ class Studio(QMainWindow):
             self.say("请求失败", msg)
 
     def finished(self):
+        self.stop_desktop()
         self.send.setEnabled(True)
 
     def demo(self):
@@ -947,6 +1039,13 @@ class Studio(QMainWindow):
         self.preview(self.pending.currentRow())
         self.review.hide()
         msg=("已写回「"+self.bound.name+"」：" if self.bound else "已采用：")+"、".join(titles)
+        if self.bound:
+            try:
+                receipt = bridge.parameter_receipt(self.bound.json_path, chosen)
+            except (OSError, ValueError, KeyError) as exc:
+                receipt = f"保存后重新读取失败：{exc}"
+            if receipt:
+                msg += "\n" + receipt
         self.update_review_links()
         self.say("当前项目" if self.bound else "工作副本",msg)
         self.history.append({"role":"user","content":msg})
