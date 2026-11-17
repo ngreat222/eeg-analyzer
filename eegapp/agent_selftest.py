@@ -29,6 +29,8 @@ def run(app, folder):
     model = "自定义兼容服务"
     panel.provider = model
     panel.keys[(model, "http://localhost/biap-test")] = ""
+    record_table = f"记录摘要 · {record.id}"
+    sent_samples = []
     calls = [
         ("list_project", {}),
         ("inspect_recording_quality", {"target": record.id}),
@@ -36,12 +38,18 @@ def run(app, folder):
         ("edit_step", {"target":"陷波","params":'{"频率Hz":50}',"title":"将陷波改为 50 Hz"}),
         ("inspect_project", {"kind":"step", "target":"高低通"}),
         ("edit_step", {"target":"高低通","params":'{"低通Hz":32}',"title":"调整低通"}),
+        ("query_table", {"target": record_table,
+                         "sql": "SELECT typeof(值), 值 FROM data WHERE 项目 = '采样点'"}),
     ]
     responses = []
     def scripted(request, **kwargs):
         body = json.loads(request.data)
         assert "list_project" in [t["function"]["name"] for t in body["tools"]]
         msgs = body["messages"]
+        if not sent_samples and msgs[-1]["role"] == "user":
+            prompt = msgs[-1]["content"]
+            attachment = json.loads(prompt.split("\n\n随消息附上的内容：", 1)[1])
+            sent_samples.append(dict(attachment["tables"][record_table]["sample"])["采样点"])
         if msgs[-1]["role"] == "tool":
             result = json.loads(msgs[-1]["content"])
             assert "error" not in result, result
@@ -56,6 +64,8 @@ def run(app, folder):
 
     try:
         before = Path(project.json_path).read_bytes()
+        panel.attach(("project", project.folder, "record", record.id))
+        assert ("table", record_table) in panel.refs
         with patch.object(panel, "connection", return_value=("", model, "test", "http://localhost/biap-test")), \
                 patch.object(workbench, "urlopen", scripted):
             panel.edit.setPlainText("检查记录质量，并给我滤波修改预览。")
@@ -66,6 +76,8 @@ def run(app, folder):
                 time.sleep(.01)
             assert panel.send.isEnabled(), "助手没有完成请求"
         assert len(responses) == len(calls), panel.chat.toPlainText()
+        assert sent_samples == [30504] and type(sent_samples[0]) is int
+        assert responses[-1]["rows"] == [["integer", 30504]], responses[-1]
         assert record.id in responses[0]["连续记录"]
         assert responses[1]["参与检测的EEG通道数"] > 0
         assert len(panel.worker.activity.entries) == len(calls)

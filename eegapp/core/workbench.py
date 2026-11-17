@@ -12,6 +12,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
+import numpy as np
+
 from . import attachments
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +45,9 @@ def valid_table(cols, rows):
         raise ValueError("请使用唯一列名")
     if len(rows) > MAX_ROWS:
         raise ValueError(f"原型支持最多 {MAX_ROWS} 行")
+    # MNE 的数值标量需要在进入工作表时转换，否则 JSON 会拒绝整数，SQLite 会把它读成二进制。
+    rows = [[value.item() if isinstance(value, np.generic) and value.dtype.kind in "biuf" else value
+             for value in row] for row in rows]
     return {"columns": list(cols), "rows": rows}
 
 
