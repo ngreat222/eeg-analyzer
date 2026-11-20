@@ -274,6 +274,7 @@ def _scenario(records):
             assert conditions(snapshot)["当前值"] == field["当前值"]
             field = conditions(snapshot)
         snapshot = yield _window("set", field["id"], items=[selected])
+        assert isinstance(snapshot.get("控件"), list), snapshot
         assert conditions(snapshot)["当前值"] == [selected]
         run = next(c for c in snapshot["控件"] if c["名称"].replace(" ", "") == f"运行{name}分析")
         receipt = yield _window("press", run["id"])
@@ -330,12 +331,14 @@ def run(app, folder):
     def review():
         dialog = app.activeModalWidget()
         if isinstance(dialog, QMessageBox):
-            if dialog.windowTitle() != "助手操作预览":
+            # Cocoa omits QMessageBox titles; the two choices identify this preview.
+            buttons = {b.text(): b for b in dialog.buttons()}
+            if set(buttons) != {"保留原状", "采用并继续"}:
                 dialog.reject()
                 return
             button = "保留原状" if not previews else "采用并继续"
             previews.append(dialog.text())
-            next(b for b in dialog.buttons() if b.text() == button).click()
+            buttons[button].click()
 
     timer = QTimer()
     timer.timeout.connect(review)
