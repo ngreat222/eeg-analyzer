@@ -1,11 +1,13 @@
 """界面公共部件：后台任务、日志、结果图标签页、表单小工具。"""
 import logging
+import re
 import sys
 import traceback
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget,
@@ -94,6 +96,7 @@ class _Task(QRunnable):
 class TaskRunner(QObject):
     """一次只跑一个后台任务；忙的时候通知主窗口锁定按钮。"""
     busy_changed = Signal(bool, str)
+    task_started = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -137,6 +140,7 @@ class TaskRunner(QObject):
 
         task.signals.done.connect(done)
         task.signals.failed.connect(failed)
+        self.task_started.emit(task)
         self.pool.start(task)
         return task
 
@@ -154,14 +158,44 @@ def show_error(title, msg, details=""):
 
 
 # ---------------------------------------------------------------- 表单小工具
+class SecondsSpinBox(QDoubleSpinBox):
+    """Keep the second-based parameter value while accepting alternate time units."""
+
+    def _seconds(self, text):
+        from ..core.events import time_seconds
+        # Qt appends the displayed suffix after the editable portion.
+        return time_seconds(text.removesuffix(self.suffix()).strip())
+
+    def validate(self, text, pos):
+        state, _, _ = super().validate(text, pos)
+        if state != QValidator.Acceptable:
+            try:
+                value = self._seconds(text)
+            except ValueError:
+                value = None
+            if value is not None and self.minimum() <= value <= self.maximum():
+                state = QValidator.Acceptable
+            elif re.fullmatch(r"[\d\s.eE:+\-−a-zA-Z毫秒分钟：]*", text):
+                state = QValidator.Intermediate
+        return state, text, pos
+
+    def valueFromText(self, text):
+        try:
+            return self._seconds(text)
+        except ValueError:
+            return super().valueFromText(text)
+
+
 def fspin(value, lo=-1e6, hi=1e6, step=0.1, decimals=3, suffix=""):
-    w = QDoubleSpinBox()
+    w = SecondsSpinBox() if suffix.strip() == "s" else QDoubleSpinBox()
     w.setRange(lo, hi)
     w.setDecimals(decimals)
     w.setSingleStep(step)
     w.setValue(value)
     if suffix:
         w.setSuffix(suffix)
+    if isinstance(w, SecondsSpinBox):
+        w.setToolTip("也可以输入毫秒或分:秒，例如 250ms、01:02.5")
     w.setKeyboardTracking(False)
     return w
 

@@ -1,41 +1,132 @@
 """报告页：本次运行过的所有分析自动收进来，可以一键导出 HTML 报告 + 图片 + 数据。"""
 import base64
+import csv
+import hashlib
 import html
 import os
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QComboBox, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QFileDialog, QComboBox, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from ..theme import C
 from .base import BasePage
 from .common import log
-from .widgets import Card, EmptyState, btn, chip, fig_pixmap, fig_png_bytes, hbox, label
+from .widgets import Card, EmptyState, Section, btn, fig_pixmap, fig_png_bytes, hbox, label
+
+
+PROCESS_KINDS = {"预处理", "分段", "事件"}
+
+
+def method_summary(res):
+    p = res.params
+    if res.kind == "ERP" and {"条件", "通道", "指标时间窗"} <= p.keys():
+        return (f"把「{p['条件']}」各条件的试次按分段零点对齐，分别平均 {p['通道']} 的脑电信号。"
+                f"用 {p['指标时间窗']} 内的平均振幅描述该时段的反应，单位为 µV。")
+    if res.kind == "时频" and {"通道", "基线"} <= p.keys():
+        return (f"用 Morlet 小波估计 {p['通道']} 的功率随时间和频率的变化。"
+                f"各条件图以 {p['基线'].split('（')[0]} 为基线，正 dB 表示功率高于基线，负 dB 表示低于基线。")
+    if res.kind == "RSA" and {"距离", "模型"} <= p.keys():
+        return (f"在每个时间窗用 {p['距离']} 距离量化类别间的脑电差异，再与「{p['模型']}」模型比较。"
+                "Spearman 相关越接近 1，表示两者对类别差异大小的排序越一致。")
+    if res.kind == "解码" and {"方法", "标签"} <= p.keys():
+        if p["方法"] == "反向编码模型 IEM":
+            return (f"从脑电活动重建「{p['标签']}」的特征值，再与打乱标签后的重建误差比较。"
+                    "正的 ΔMAE 表示实际标签的平均绝对误差较小。")
+        if p["方法"] == "跨时间泛化":
+            return (f"用一个时间窗的脑电信号学习区分「{p['标签']}」的类别，在其他时间窗测试。"
+                    "矩阵对角线表示训练和测试在相同时间窗进行，其他位置显示跨时间的正确率。")
+        return (f"在每个时间窗使用交叉验证，由脑电信号预测「{p['标签']}」的类别。"
+                "正确率表示分对的比例，可与相同类别数下的机会水平比较。")
+    return ""
+
+
+def _result_card(when, res):
+    card = Card()
+    card.add(label(res.title, "H2", wrap=True))
+    card.add(label(when.strftime("%H:%M:%S") + "　" + str(res.params.get("记录") or res.params.get("范围", "")),
+                   "Sub", wrap=True))
+    summary = method_summary(res)
+    if summary:
+        card.add(label(summary, wrap=True))
+    if res.metrics:
+        card.add(label("　·　".join(f"{k} {v}" for k, v, _ in res.metrics), "H2", wrap=True))
+    for note in res.notes:
+        card.add(label(note, "Sub", wrap=True))
+    if res.params or res.figures:
+        details = Section("参数与图表", expanded=False)
+        if res.params:
+            details.widget(label("　·　".join(f"{k} {v}" for k, v in res.params.items()), "Sub", wrap=True))
+        for k, _, hint in res.metrics:
+            if hint:
+                details.widget(label(f"{k}　{hint}", "Sub", wrap=True))
+        if res.figures:
+            picker = details.widget(QComboBox())
+            picker.addItems([title for title, _ in res.figures])
+            preview = details.widget(QLabel())
+            preview.setAlignment(Qt.AlignCenter)
+
+            def display(index):
+                if not details.toggle.isChecked():
+                    preview.clear()
+                    return
+                image = fig_pixmap(res.figures[index][1], 940)
+                preview.setPixmap(image.scaled(720, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+            def opened(on):
+                if on and not preview.pixmap():
+                    display(picker.currentIndex())
+
+            picker.currentIndexChanged.connect(display)
+            details.toggle.toggled.connect(opened)
+        card.add(details)
+    return card
 
 
 class ReportPage(BasePage):
     title = "分析报告"
-    subtitle = "查看本次会话的分析结果，导出图表与数值。"
+    subtitle = "未导出的结果保留到关闭软件。导出后可在这里重新打开 HTML 报告。"
 
     def __init__(self, ctx):
         super().__init__(ctx, with_side=False)
+        self.displayed_items = []
+        self.record_name = None
+        self.workflow_project = None
+        self.project_results = btn("项目全部结果", lambda: self.show_items(self.ctx.reports), "ghost")
+        self.project_results.hide()
+        self.last_export = btn("打开上次导出", self.open_last_export, "ghost", "mdi6.file-find-outline")
+        self.last_export.hide()
+        self.clear_button = btn("清空", self.clear, "ghost", "mdi6.broom")
         bar = hbox(btn("导出报告", self.export, "primary", "mdi6.file-export-outline"),
-                   btn("清空", self.clear, "ghost", "mdi6.broom"), "stretch")
+                   self.last_export, self.project_results, self.clear_button, "stretch")
         self.body.addLayout(bar)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.empty = EmptyState("mdi6.file-chart-outline", "报告还是空的",
+        self.empty = EmptyState("mdi6.file-chart-outline", "当前会话还没有分析结果",
                                 "到 ERP、时频、解码或 RSA 页运行一次分析，结果会自动出现在这里。")
         self.scroll.setWidget(self.empty)
         self.body.addWidget(self.scroll, 1)
 
     def on_show(self):
         super().on_show()
-        self.show_items(self.ctx.reports)
+        self.refresh_last_export()
+        if self.record_name is not None and self.project is self.workflow_project:
+            self.show_items(self.displayed_items, self.record_name)
+        else:
+            self.show_items(self.ctx.reports)
 
-    def show_items(self, items):
+    def show_items(self, items, record_name=None):
+        self.displayed_items = list(items)
+        self.record_name = record_name
+        self.workflow_project = self.project if record_name is not None else None
+        self.project_results.setVisible(record_name is not None)
+        self.clear_button.setVisible(record_name is None)
         old = self.scroll.takeWidget()
         if old is not None and old is not self.empty:
             old.deleteLater()
@@ -46,30 +137,19 @@ class ReportPage(BasePage):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 8, 8)
         lay.setSpacing(12)
-        for when, res in reversed(items):
-            card = Card(res.title, when.strftime("%H:%M:%S") + "　·　" + "　".join(
-                f"{k}：{v}" for k, v in list(res.params.items())[:4]))
-            if res.metrics:
-                row = QHBoxLayout()
-                row.setSpacing(6)
-                for m in res.metrics[:5]:
-                    row.addWidget(chip(f"{m[0]}：{m[1]}", C["on_soft"], C["soft"]))
-                row.addStretch(1)
-                card.add(row)
-            if res.figures:
-                picker = QComboBox()
-                for title, fig in res.figures:
-                    picker.addItem(title)
-                preview = QLabel()
-                preview.setAlignment(Qt.AlignCenter)
-                def display(index, figures=res.figures, target=preview):
-                    image = fig_pixmap(figures[index][1], 940)
-                    target.setPixmap(image.scaled(720, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                picker.currentIndexChanged.connect(display)
-                display(0)
-                card.add(picker)
-                card.add(preview)
-            lay.addWidget(card)
+        if record_name:
+            lay.addWidget(label(record_name, "H2", wrap=True))
+        stages = []
+        for when, res in reversed(self.displayed_items):
+            if res.kind in PROCESS_KINDS:
+                stages.append((when, res))
+            else:
+                lay.addWidget(_result_card(when, res))
+        if stages:
+            history = Section(f"处理记录（{len(stages)} 步）", expanded=False)
+            for when, res in reversed(stages):
+                history.widget(_result_card(when, res))
+            lay.addWidget(history)
         lay.addStretch(1)
         self.scroll.setWidget(w)
 
@@ -78,8 +158,43 @@ class ReportPage(BasePage):
             self.ctx.reports.clear()
             self.on_show()
 
+    @staticmethod
+    def _export_key(project):
+        folder = os.path.normcase(os.path.realpath(project.folder))
+        return "report_exports/" + hashlib.sha256(os.fsencode(folder)).hexdigest()
+
+    def remember_export(self, project, path):
+        if project is None:
+            return
+        self.ctx.settings.setValue(self._export_key(project), str(Path(path).resolve()))
+        self.ctx.settings.sync()
+        if self.project is project:
+            self.refresh_last_export()
+
+    def refresh_last_export(self):
+        path = None
+        if self.project:
+            saved = self.ctx.settings.value(self._export_key(self.project), "")
+            if saved and Path(saved).is_file():
+                path = Path(saved)
+            else:
+                # Also recover reports made in the project's standard export folder by an older version.
+                directory = Path(self.project.folder) / "报告"
+                path = max((p for p in directory.glob("*/报告.html") if p.is_file()),
+                           key=lambda p: p.parent.name, default=None)
+        self.last_export.setVisible(path is not None)
+        self.last_export.setToolTip(str(path) if path else "")
+        return path
+
+    def open_last_export(self):
+        path = self.refresh_last_export()
+        if path is None:
+            QMessageBox.information(self, "打开报告", "找不到该项目上次导出的报告文件。")
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.information(self, "打开报告", f"请用浏览器打开这个文件：\n{path}")
+
     def export(self):
-        items = self.ctx.reports
+        items = list(self.displayed_items)
         if not items:
             QMessageBox.information(self, "报告", "还没有分析结果。")
             return
@@ -87,26 +202,42 @@ class ReportPage(BasePage):
         folder = QFileDialog.getExistingDirectory(self, "选择导出位置", start)
         if not folder:
             return
-        out = os.path.join(folder, f"报告_{datetime.now():%Y%m%d_%H%M%S}")
-        name = self.project.name if self.project else "脑电分析"
-        self.run("导出报告", lambda: export_report(out, name, items), lambda p: self._done(p))
+        project = self.project
+        name = self.record_name or (project.name if project else "脑电分析")
+        def done(path):
+            self.remember_export(project, path)
+            self._done(path)
+        self.run("导出报告", lambda: export_new_report(folder, name, items, prefix="报告_"), done)
 
     def _done(self, path):
         log(f"报告已导出：{path}")
         r = QMessageBox.question(self, "导出完成", f"已导出到：\n{os.path.dirname(path)}\n\n现在打开报告吗？")
         if r == QMessageBox.Yes:
-            from PySide6.QtCore import QUrl
-            from PySide6.QtGui import QDesktopServices
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+def export_new_report(parent, project_name, items, prefix=""):
+    parent = Path(parent)
+    with TemporaryDirectory(prefix=".biap-", dir=parent) as staging:
+        folder = Path(staging) / "report"
+        html_file = Path(export_report(folder, project_name, items))
+        if not html_file.is_file() or html_file.stat().st_size == 0:
+            raise ValueError("报告文件未生成。")
+        destination = parent / f"{prefix}{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
+        folder.rename(destination)
+        return str(destination / html_file.name)
 
 
 def export_report(out, project_name, items):
     os.makedirs(os.path.join(out, "图"), exist_ok=True)
     os.makedirs(os.path.join(out, "数据"), exist_ok=True)
-    parts = []
+    parts, stages = [], []
     for n, (when, res) in enumerate(items, 1):
-        sec = [f"<section><h2>{n}. {html.escape(res.title)}</h2>",
+        sec = [f"<section><h2>{html.escape(res.title)}</h2>",
                f"<p class='meta'>{when:%Y-%m-%d %H:%M:%S}</p>"]
+        summary = method_summary(res)
+        if summary:
+            sec.append(f"<p>{html.escape(summary)}</p>")
         if res.params:
             sec.append("<div class='chips'>" + "".join(
                 f"<span>{html.escape(str(k))}：{html.escape(str(v))}</span>" for k, v in res.params.items()) + "</div>")
@@ -127,13 +258,20 @@ def export_report(out, project_name, items):
             head, rows = res.table
             sec.append("<table><tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in head) + "</tr>" + "".join(
                 "<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in r) + "</tr>" for r in rows) + "</table>")
-            with open(os.path.join(out, "数据", f"{n:02d}_{_safe(res.title)}.csv"), "w", encoding="utf-8-sig") as fh:
-                fh.write(",".join(head) + "\n" + "\n".join(",".join(map(str, r)) for r in rows) + "\n")
+            with open(os.path.join(out, "数据", f"{n:02d}_{_safe(res.title)}.csv"), "w",
+                      encoding="utf-8-sig", newline="") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(head)
+                writer.writerows(rows)
         if res.arrays:
             np.savez(os.path.join(out, "数据", f"{n:02d}_{_safe(res.title)}.npz"),
                      **{k: np.asarray(v) for k, v in res.arrays.items()})
         sec.append("</section>")
-        parts.append("\n".join(sec))
+        (stages if res.kind in PROCESS_KINDS else parts).append("\n".join(sec))
+    counts = f"{len(parts)} 项分析"
+    if stages:
+        counts += f" · {len(stages)} 个处理步骤"
+        parts.append(f"<details><summary>处理记录（{len(stages)} 步）</summary>{''.join(stages)}</details>")
     page = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(project_name)} 分析报告</title>
 <style>
@@ -153,7 +291,7 @@ table{{border-collapse:collapse;width:100%;font-size:13px;margin-top:10px}}
 th,td{{border-bottom:1px solid {C['line']};padding:6px 8px;text-align:left}} th{{color:{C['text2']}}}
 </style></head><body><main>
 <h1>{html.escape(project_name)} · 分析报告</h1>
-<p class="sub">生成时间 {datetime.now():%Y-%m-%d %H:%M} · 共 {len(items)} 项分析 · 图片在“图”文件夹，数值在“数据”文件夹</p>
+<p class="sub">生成时间 {datetime.now():%Y-%m-%d %H:%M} · {counts} · 图片在“图”文件夹，数值在“数据”文件夹</p>
 {''.join(parts)}
 </main></body></html>"""
     path = os.path.join(out, "报告.html")

@@ -142,9 +142,11 @@ def plot_group_erp(times, erps, stat=None, ylim=None, title="", unit="µV", ms=T
     ax = fig.subplots()
     t = times * 1000 if ms else times
     for i, (name, x) in enumerate(erps.items()):
-        avg, err = x.mean(0), sem(x)
+        avg = x.mean(0)
         col = COLORS[i % len(COLORS)]
-        ax.fill_between(t, avg - err, avg + err, color=col, alpha=0.2)
+        if len(x) >= 2:
+            err = sem(x)
+            ax.fill_between(t, avg - err, avg + err, color=col, alpha=0.2)
         ax.plot(t, avg, color=col, lw=1.8, label=f"{name}（n={x.shape[0]}）")
     if ylim:
         ax.set_ylim(*ylim)

@@ -130,7 +130,12 @@ class BasePage(QWidget):
         selector.setMinimumContentsLength(12)
         selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         selector.setPlaceholderText("尚未导入连续记录")
-        self.context_row.insertWidget(1, selector)
+        # Let long recording names use the space between the label and Settings.
+        self.context_row.setStretch(1, 0)
+        self.context_row.insertWidget(1, selector, 1)
+        selector.setAccessibleName("当前记录")
+        selector.currentTextChanged.connect(lambda text: selector.setToolTip(
+            "\n".join(filter(None, (text, selector.currentData(Qt.ToolTipRole))))))
         return selector
 
     # ------------------------------------------------------------ 公共
@@ -150,7 +155,7 @@ class BasePage(QWidget):
             return False
         if need_done and not p.done_subjects():
             QMessageBox.information(self, "还没有可分析的数据",
-                                    "项目里还没有分段好的被试。原始数据要先到「预处理」处理，再到「事件与分段」分段；"
+                                    "到「事件与分段」选择一条连续记录，点击「只分段当前记录」。"
                                     "也可以在「项目」直接导入分段数据。")
             return False
         return True

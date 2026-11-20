@@ -14,6 +14,7 @@
 import json
 import os
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 import mne
@@ -24,6 +25,7 @@ from . import reading, single
 
 REC_RAW = "待预处理"
 REC_DONE = "已预处理"
+REC_PARTIAL = "已单步处理"
 STATUS_RAW = "未分段"
 STATUS_DONE = "可分析"
 EPOCH_EVENTS = "按事件"
@@ -31,6 +33,7 @@ EPOCH_FIXED = "固定长度"
 
 
 STEPS = ("陷波", "高低通", "重采样", "坏道插值", "重参考")
+SINGLE_STEPS = ("通道", *STEPS, "ICA")
 
 
 @dataclass
@@ -65,6 +68,8 @@ class Pipeline:
     reject_uv: float = 150.0          # 0 = 不剔除
     # 事件表格的导入方式（批量用）
     event_import: dict = field(default_factory=dict)
+    events_explicit: bool = False     # 明确取消全选时，空列表表示没有勾选事件
+    segment_limit_uv: float = 150.0   # 自动坏段检测的峰峰阈值
 
 
 @dataclass
@@ -82,6 +87,9 @@ class Recording:
     clean_file: str = ""
     note: str = ""
     reviewed_ica: str = ""
+    processed_ica: dict = field(default_factory=dict)  # 上次成功写入连续数据时的模式和实际排除的成分
+    step_history: list = field(default_factory=list)
+    record_epochs_file: str = ""
 
     @property
     def label(self):
@@ -252,8 +260,44 @@ class Project:
             log(f"{rec.id}：数据自带 {len(df)} 个事件")
         return df
 
-    def save_events(self, rec, df):
-        ev.save(df, self.events_path(rec))
+    def save_events(self, rec, df, expected=None):
+        """Commit table and epoch invalidation together, keeping the previous CSV until commit."""
+        from copy import copy, deepcopy
+        from pathlib import Path
+        from uuid import uuid4
+
+        subject, current = self.get_rec(rec.id)
+        if current is not rec:
+            raise ValueError("这条记录已经变化，请重新打开事件表。")
+        old = Path(self.events_path(rec))
+        table = ev.tidy(df)
+        if old.is_file():
+            before = ev.load(old)
+            if expected is not None and not before.equals(expected):
+                raise ValueError("事件表已在另一处修改。请重新打开当前记录的波形，再核对标记。")
+            if table.equals(before):
+                return
+        elif expected is not None:
+            raise ValueError("原事件表已移动，请重新打开记录。")
+        staged = copy(self)
+        staged.subjects = deepcopy(self.subjects)
+        target, updated = staged.get_rec(rec.id)
+        rel = os.path.join("events", "versions", uuid4().hex + ".csv")
+        path = Path(self.path(rel))
+        updated.events_file = rel
+        updated.record_epochs_file = ""
+        target.status, target.epochs_file, target.n_trials = STATUS_RAW, "", {}
+        try:
+            ev.save(table, path)
+            staged.save()
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        self._saved_bytes = staged._saved_bytes
+        rec.events_file = rel
+        rec.record_epochs_file = ""
+        subject.status, subject.epochs_file, subject.n_trials = target.status, "", {}
+        self._cache.pop(subject.name, None)
 
     # ------------------------------------------------------------ 分段数据
     def epochs(self, name):
@@ -275,12 +319,18 @@ class Project:
 
     def conditions(self):
         """所有已分段被试共有的条件。"""
-        sets = [set(self.epochs(s.name).event_id) for s in self.done_subjects()]
-        if not sets:
+        counts = self.condition_counts()
+        if not counts:
             return []
-        common = set.intersection(*sets)
-        first = list(self.epochs(self.done_subjects()[0].name).event_id)
-        return [c for c in first if c in common]
+        exact = [{name for name in self.epochs(subject).event_id if name in counts[subject]}
+                 for subject in counts]
+        common = set.intersection(*exact)
+        return [name for name in self.epochs(next(iter(counts))).event_id if name in common]
+
+    def condition_counts(self, scope=None):
+        """按被试列出实际保留的试次数，包括 MNE 的层级事件选择器。"""
+        subjects = [self.get(scope)] if scope and scope != "全组" else self.done_subjects()
+        return {s.name: retained_condition_counts(self.epochs(s.name)) for s in subjects}
 
     def condition_options(self, scope=None):
         """可选的条件：所有被试出现过的事件名，以及“文本/刺激出现”拆开后的“文本”“刺激出现”。
@@ -288,20 +338,9 @@ class Project:
         返回 [(条件, 有这个条件的被试数, 被试总数)]，按覆盖的被试数从多到少排。
         scope 为某个被试名时只看这个被试。
         """
-        subs = [self.get(scope)] if scope and scope != "全组" else self.done_subjects()
-        count, order = {}, []
-        for s in subs:
-            names = []
-            for k in self.epochs(s.name).event_id:
-                parts = k.split("/")
-                names += [k] + (parts if len(parts) > 1 else [])
-            names = list(dict.fromkeys(names))
-            for n in names:
-                if n not in count:
-                    order.append(n)
-                count[n] = count.get(n, 0) + 1
-        rank = {n: i for i, n in enumerate(order)}
-        return sorted(((n, count[n], len(subs)) for n in order), key=lambda x: (-x[1], rank[x[0]]))
+        by_subject = self.condition_counts(scope)
+        coverage = Counter(name for counts in by_subject.values() for name in counts)
+        return [(name, n, len(by_subject)) for name, n in coverage.most_common()]
 
     def label_columns(self, scope=None):
         """可用于解码 / RSA 的标签：条件本身，加上分段数据 metadata 里的列。"""
@@ -323,6 +362,29 @@ class Project:
             info.update(sfreq=ep.info["sfreq"], n_ch=len(mne.pick_types(ep.info, eeg=True)),
                         conds=self.conditions(), tmin=ep.tmin, tmax=ep.tmax)
         return info
+
+
+def retained_condition_counts(epochs):
+    """Count events still in the epochs, using the same tag matching as epochs[name]."""
+    by_code = Counter(epochs.events[:, 2].tolist())
+    if not any("/" in key for key in epochs.event_id):
+        return {name: by_code[code] for name, code in epochs.event_id.items() if code in by_code}
+
+    names_by_tag = {}
+    selectors = {}
+    for name, code in epochs.event_id.items():
+        tags = name.split("/")
+        selectors.update(dict.fromkeys((name, *tags)))
+        if code in by_code:
+            for tag in tags:
+                names_by_tag.setdefault(tag, set()).add(name)
+    counts = {}
+    for selector in selectors:
+        matches = set.intersection(*(names_by_tag.get(tag, set()) for tag in selector.split("/")))
+        if matches:
+            codes = {epochs.event_id[name] for name in matches}
+            counts[selector] = sum(by_code[code] for code in codes)
+    return counts
 
 
 def save_epochs(epochs, path):
@@ -634,7 +696,7 @@ def _auto_montage(raw, log):
     return False
 
 
-def filter_raw(raw, pipe, log=print, interpolate=True, stop_before=None):
+def filter_raw(raw, pipe, log=print, interpolate=True, stop_before=None, only_step=None):
     if sorted(pipe.order) != sorted(STEPS):
         raise ValueError("步骤必须各出现一次。")
     # 已标记缺失值在连续数组中使用有限占位，避免重采样把 NaN 扩散到整条记录。
@@ -643,7 +705,9 @@ def filter_raw(raw, pipe, log=print, interpolate=True, stop_before=None):
         if not np.isfinite(good).all():
             raise ValueError("有效区间含缺失值，请先自动检测并确认相应坏段。")
         raw._data[~np.isfinite(raw._data)] = 0
-    for step in pipe.order:
+    if only_step is not None and only_step not in STEPS:
+        raise ValueError(f"未知处理步骤：{only_step}")
+    for step in ((only_step,) if only_step else pipe.order):
         if step == stop_before:
             break
         log(f"执行步骤：{step}")
@@ -683,7 +747,7 @@ def filter_raw(raw, pipe, log=print, interpolate=True, stop_before=None):
             if pipe.reref == "平均参考":
                 raw.set_eeg_reference("average", projection=False, verbose=False)
             elif pipe.reref == "指定通道" and pipe.reref_channels.strip():
-                raw.set_eeg_reference(single.parse_names(pipe.reref_channels), projection=False, verbose=False)
+                raw.set_eeg_reference(single.channel_names(pipe.reref_channels), projection=False, verbose=False)
     return raw
 
 
@@ -781,28 +845,177 @@ def clean_path(project, rec):
     return os.path.join("clean", f"{rec.id}-raw.fif")
 
 
+def has_continuous_result(project, rec):
+    snapshot = rec.step_history and rec.step_history[-1]["output"] == rec.clean_file
+    return bool((rec.status == REC_DONE or snapshot) and rec.clean_file and os.path.isfile(project.path(rec.clean_file)))
+
+
+def _remove_ica(raw, pipe, rec, ica, log):
+    if ica is None:
+        ica, _ = fit_ica(raw, pipe, log=log)
+    if rec.ica_manual and rec.reviewed_ica and ica_identity(ica) != rec.reviewed_ica:
+        raise ValueError("ICA 分解已改变，请重新查看成分图并确认去除成分。")
+    exclude = rec.ica_exclude if rec.ica_manual else auto_exclude(ica, raw, pipe, log=log)
+    removed = [int(x) for x in exclude]
+    if any(not 0 <= i < ica.n_components_ for i in removed):
+        raise ValueError(f"去除清单含本次拟合以外的成分，编号应在 0 到 {ica.n_components_ - 1} 之间。")
+    mode = "manual" if rec.ica_manual else "auto" if pipe.ica_auto_eog else "keep"
+    ica.exclude = list(removed)
+    if removed:
+        ica.apply(raw, verbose=False)
+        log(f"ICA 去除成分 {removed}")
+    return {"mode": mode, "exclude": removed}
+
+
+def _drop_event_annotations(raw):
+    raw.annotations.delete([i for i, tag in enumerate(raw.annotations.description)
+                            if not tag.lower().startswith(("bad", "edge"))])
+
+
+_STEP_FIELDS = {
+    "通道": ("montage",), "陷波": ("notch","harmonics"), "高低通": ("l_freq","h_freq"),
+    "重采样": ("resample",), "坏道插值": ("interpolate",), "重参考": ("reref","reref_channels"),
+    "ICA": ("ica_method","ica_n","ica_auto_eog"),
+}
+
+
+def _step_base(rec, step, source):
+    if step not in SINGLE_STEPS or source not in ("raw", "current", "auto"):
+        raise ValueError("请选择一个单步处理操作及其输入。")
+    if source == "raw" or step == "通道":
+        if source == "current" and step == "通道":
+            raise ValueError("重新选择通道需要原始记录，请选择「原始记录」作为输入。")
+        return "", [], {}
+    history = list(rec.step_history)
+    if history and rec.clean_file != history[-1]["output"]:
+        raise ValueError("单步历史与当前连续文件不一致，请从原始记录开始。")
+    for index, entry in enumerate(history):
+        if entry["step"] == step:
+            # Replacing a step starts a new branch at its input, even when it
+            # was the last step. Never filter previously filtered samples twice.
+            return entry["input"], history[:index], entry["input_ica"]
+    if history or source == "current":
+        if not rec.clean_file:
+            raise ValueError("没有可接续的连续数据，请选择原始记录作为输入。")
+        return rec.clean_file, history, rec.processed_ica
+    return "", [], {}
+
+
+def _read_step_base(project, subj, rec, input_file, history, log):
+    if not input_file:
+        return open_raw(subj, rec, project.pipeline, log=log)[0]
+    path = project.path(input_file)
+    if not os.path.isfile(path):
+        raise ValueError("所选单步的输入文件已移动，请从原始记录重新开始。")
+    raw = mne.io.read_raw_fif(path, preload=True, verbose=False)
+    if history:
+        # Carry forward interpolated channels as good. Apply channel marks and
+        # project annotations entered by the user since producing the base FIF.
+        last = history[-1]
+        old_bads = set(last["bads"])
+        new_bads = set(rec.bads)
+        marked = (set(raw.info["bads"]) - (old_bads - new_bads)) | (new_bads - old_bads)
+        raw.info["bads"] = [ch for ch in raw.ch_names if ch in marked]
+        if last["bad_segments"] != rec.bad_segments:
+            raw.annotations.delete([i for i, tag in enumerate(raw.annotations.description) if tag.startswith("BAD_qc_")])
+            for start, stop, reason in rec.bad_segments:
+                raw.annotations.append(raw.first_time + start, stop - start, "BAD_qc_" + reason)
+    return raw
+
+
+def open_step_input(project, subj, rec, step, *, source="auto", log=print):
+    """Load the same signal that running this step will use, for ICA review."""
+    input_file, history, _ = _step_base(rec, step, source)
+    return _read_step_base(project, subj, rec, input_file, history, log)
+
+
+def preprocess_step(project, subj, rec, step, *, source="auto", log=print):
+    """Run one operation, save a new continuous FIF and atomically publish its project pointer."""
+    from copy import copy, deepcopy
+    from pathlib import Path
+    from tempfile import mkdtemp
+
+    owner, current = project.get_rec(rec.id)
+    if owner is not subj or current is not rec:
+        raise ValueError("记录已切换，请重新选择。")
+    staged = copy(project)
+    staged.pipeline = deepcopy(project.pipeline)
+    staged.subjects = deepcopy(project.subjects)
+    subject, target = staged.get_rec(rec.id)
+    pipe = staged.pipeline
+    input_file, history, input_ica = _step_base(target, step, source)
+    log(f"{rec.id}：只运行「{step}」，输入为 {input_file or '原始记录'}")
+    raw = _read_step_base(staged, subject, target, input_file, history, log)
+    params = {name:getattr(pipe, name) for name in _STEP_FIELDS[step]}
+    details = input_ica
+    if step == "ICA":
+        details = _remove_ica(raw, pipe, target, None, log)
+        params.update(details)
+        target.ica_exclude = details["exclude"]
+    elif step == "通道":
+        params.update(电极位置=subject.locs, 按位置重命名=subject.rename_from_locs, 排除非脑电通道=target.non_eeg)
+    else:
+        if step == "陷波" and not 0 < pipe.notch < raw.info["sfreq"] / 2:
+            raise ValueError("请选择正的陷波频率，且小于当前采样率的一半。")
+        if step == "高低通" and not (pipe.l_freq or pipe.h_freq):
+            raise ValueError("请先设置高通或低通截止频率。")
+        if step == "重采样" and pipe.resample <= 0:
+            raise ValueError("请先填写目标采样率。")
+        if step == "重参考" and (pipe.reref == "不改变" or pipe.reref == "指定通道" and not pipe.reref_channels.strip()):
+            raise ValueError("请选择平均参考或指定参考通道。")
+        if step == "坏道插值":
+            if not pipe.interpolate or not raw.info["bads"] or raw.get_montage() is None:
+                raise ValueError("请开启插值、标记坏导并设置电极位置。")
+        filter_raw(raw, pipe, log=log, only_step=step)
+    _drop_event_annotations(raw)
+    parent = Path(project.folder) / "clean" / "steps"
+    parent.mkdir(parents=True, exist_ok=True)
+    destination = Path(mkdtemp(dir=parent))
+    path = destination / "signal-raw.fif"
+    rel = os.path.relpath(path, staged.folder)
+    entry = dict(step=step, input=input_file, input_ica=input_ica, output=rel, params=params,
+                 bads=list(target.bads), bad_segments=deepcopy(target.bad_segments))
+    target.step_history = [*history, entry]
+    target.clean_file, target.status, target.processed_ica = rel, REC_PARTIAL, details
+    target.record_epochs_file = ""
+    subject.status, subject.epochs_file, subject.n_trials = STATUS_RAW, "", {}
+    try:
+        raw.save(path, fmt="single", verbose=False)
+        if project._saved_bytes != staged._saved_bytes:
+            raise ValueError("计算期间项目已修改，请核对后重新运行该步骤。")
+        staged.save()
+    except Exception:
+        # MNE may create split FIFs for large recordings. This directory was
+        # created exclusively for this invocation and has not been published.
+        for file in destination.iterdir():
+            file.unlink()
+        destination.rmdir()
+        raise
+    project._saved_bytes = staged._saved_bytes
+    for key in ("step_history","clean_file","status","processed_ica","ica_exclude","record_epochs_file"):
+        setattr(rec, key, getattr(target, key))
+    subj.status, subj.epochs_file, subj.n_trials = subject.status, "", {}
+    project._cache.pop(subj.name, None)
+    log(f"{rec.id}：已单独完成「{step}」，已保存 {rel}")
+    return raw
+
+
 def preprocess_recording(project, subj, rec, raw=None, ica=None, log=print):
     """预处理一条连续数据并保存。raw/ica 可传入界面里已经检查过的对象（raw 必须已滤波）。"""
     pipe = project.pipeline
     if raw is None:
         raw, _ = open_raw(subj, rec, pipe, log=log)
         filter_raw(raw, pipe, log=log)
-    if pipe.ica:
-        if ica is None:
-            ica, _ = fit_ica(raw, pipe, log=log)
-        if rec.ica_manual and rec.reviewed_ica and ica_identity(ica) != rec.reviewed_ica:
-            raise ValueError("ICA 分解已改变，请重新查看成分图并确认去除成分。")
-        exclude = rec.ica_exclude if rec.ica_manual else auto_exclude(ica, raw, pipe, log=log)
-        rec.ica_exclude = [int(x) for x in exclude]
-        if exclude:
-            ica.exclude = list(rec.ica_exclude)
-            ica.apply(raw, verbose=False)
-            log(f"ICA 去除成分 {rec.ica_exclude}")
-    raw.annotations.delete([i for i, tag in enumerate(raw.annotations.description)
-                            if not tag.lower().startswith(("bad", "edge"))])
+    details = _remove_ica(raw, pipe, rec, ica, log) if pipe.ica else {"mode":"disabled","exclude":[]}
+    _drop_event_annotations(raw)
     rel = clean_path(project, rec)
     os.makedirs(os.path.join(project.folder, "clean"), exist_ok=True)
     raw.save(project.path(rel), overwrite=True, fmt="single", verbose=False)
+    rec.processed_ica = details
+    if pipe.ica:
+        rec.ica_exclude = details["exclude"]
+    rec.step_history = []
+    rec.record_epochs_file = ""
     rec.clean_file = rel
     rec.status = REC_DONE
     log(f"{rec.id}：预处理完成，{len(raw.ch_names)} 个通道，{raw.times[-1]:.0f} 秒")
@@ -814,18 +1027,25 @@ def _key(rec, name):
     return f"{rec.condition}/{name}" if rec.condition else str(name)
 
 
-def epoch_subject(project, subj, log=print, relative_path=None):
+def epoch_subject(project, subj, log=print, relative_path=None, *, raw_record_id=None):
     """把一个被试所有预处理好的记录分段，合并成该被试的分段数据。
 
     有条件的记录，事件名前加条件，例如“文本/刺激出现”；分析时可以按“文本”或“刺激出现”选取。
     """
     import pandas as pd
     pipe = project.pipeline
-    recs = [r for r in subj.recordings if r.status == REC_DONE and r.clean_file
-            and os.path.exists(project.path(r.clean_file))]
-    if not recs:
-        raise ValueError(f"{subj.name} 还没有预处理好的记录，请先到「预处理」处理")
-    raws = [(r, mne.io.read_raw_fif(project.path(r.clean_file), preload=True, verbose=False)) for r in recs]
+    if pipe.epoch_mode == EPOCH_EVENTS and pipe.events_explicit and not pipe.events:
+        raise ValueError("尚未勾选分段事件。请到「事件与分段 → 分段」选择事件。")
+    if raw_record_id is not None:
+        rec = next((r for r in subj.recordings if r.id == raw_record_id), None)
+        if rec is None:
+            raise ValueError("当前被试中找不到指定的原始记录。")
+        raws = [(rec, open_raw(subj, rec, pipe, log=log)[0])]
+    else:
+        recs = [r for r in subj.recordings if has_continuous_result(project, r)]
+        if not recs:
+            raise ValueError(f"{subj.name} 还没有可用的连续处理结果。可选择从当前原始记录直接分段。")
+        raws = [(r, _read_step_base(project, subj, r, r.clean_file, r.step_history, log)) for r in recs]
     common = [c for c in raws[0][1].ch_names if all(c in x.ch_names for _, x in raws)]
     sf0 = raws[0][1].info["sfreq"]
     bads = sorted(set().union(*[set(x.info["bads"]) for _, x in raws]) & set(common))
@@ -893,6 +1113,65 @@ def epoch_subject(project, subj, log=print, relative_path=None):
     project.store_epochs(subj, ep, relative_path)
     log(f"{subj.name}：分段完成，" + "，".join(f"{k} {v}" for k, v in subj.n_trials.items()))
     return ep
+
+
+def record_epoch_scope(project, rec):
+    """Resolve the epochs belonging to one recording without borrowing its siblings' trials."""
+    from copy import copy
+    owner, current = project.get_rec(rec.id)
+    if current is not rec:
+        raise ValueError("记录已经变化，请重新打开记录。")
+    if len(owner.recordings) == 1:
+        return project, owner, owner.epochs_file or None
+    scope = copy(project)
+    subject = copy(owner)
+    subject.recordings = [rec]
+    subject.epochs_file = rec.record_epochs_file
+    subject.n_trials = {}
+    subject.status = STATUS_DONE if subject.epochs_file else STATUS_RAW
+    scope.subjects, scope._cache = [subject], {}
+    return scope, subject, subject.epochs_file or None
+
+
+def epoch_record(project, rec, *, source, log=print):
+    """Segment one recording and publish its new file only once the computation succeeds."""
+    from copy import copy
+    from pathlib import Path
+    from uuid import uuid4
+    if source not in ("raw", "current"):
+        raise ValueError("请选择原始记录或当前处理结果。")
+    if source == "current" and not has_continuous_result(project, rec):
+        raise ValueError("当前记录没有可用的处理结果。可以直接选择原始记录分段。")
+    owner, _ = project.get_rec(rec.id)
+    expected = project._saved_bytes
+    scope = copy(project)
+    subject = copy(owner)
+    subject.recordings = [rec]
+    scope.subjects, scope._cache = [subject], {}
+    rel = f"epochs/records/{uuid4().hex}-epo.fif"
+    updated = False
+    try:
+        epochs = epoch_subject(scope, subject, log=log, relative_path=rel,
+                               raw_record_id=rec.id if source == "raw" else None)
+        if project._saved_bytes != expected:
+            raise ValueError("分段期间项目已修改，请按最新设置再次分段。")
+        previous = rec.record_epochs_file, owner.epochs_file, owner.status, owner.n_trials
+        rec.record_epochs_file = rel
+        updated = True
+        if len(owner.recordings) == 1:
+            owner.epochs_file, owner.status, owner.n_trials = rel, subject.status, subject.n_trials
+        project.save()
+    except Exception:
+        if updated:
+            rec.record_epochs_file, owner.epochs_file, owner.status, owner.n_trials = previous
+        output = Path(project.path(rel))
+        for part in output.parent.glob(output.stem + "*.fif"):
+            part.unlink()
+        raise
+    if len(owner.recordings) == 1:
+        project._cache[owner.name] = epochs
+        return project, owner, epochs
+    return scope, subject, epochs
 
 
 def run_pipeline(project, subj, log=print):

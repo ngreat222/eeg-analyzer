@@ -4,7 +4,7 @@ from datetime import datetime
 
 from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QTextCursor
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPlainTextEdit, QProgressBar, QStackedWidget,
                                QVBoxLayout, QWidget, QSizePolicy, QScrollArea, QSplitter, QToolBar)
 
@@ -56,9 +56,12 @@ class MainWindow(QMainWindow):
         # 样式只加在主窗口上（对话框是它的子窗口，会继承）；MNE 的波形浏览器有自己的主题，不能被它影响
         self.setStyleSheet(theme.QSS + _check_qss())
         self.project = None
+        self.navigation_visit = 0
         self.reports = []
+        self._project_reports = {}
         self.runner = TaskRunner(self)
         self._windows = []
+        self._mark_editors = {}
         self.settings = settings if settings is not None else QSettings("EEGAnalyzer", "EEGAnalyzer")
 
         self.logw = QPlainTextEdit()
@@ -254,6 +257,7 @@ class MainWindow(QMainWindow):
         tb.setCheckable(False)
         tb.clicked.connect(self.toggle_theme)
         lay.addWidget(tb)
+        self.workspace_buttons = (nb, ob, self.log_btn, tb)
         ver = label(f"版本 {__version__}", "Caption")
         ver.setContentsMargins(10, 6, 0, 0)
         lay.addWidget(ver)
@@ -274,6 +278,8 @@ class MainWindow(QMainWindow):
             group.setVisible(active)
 
     def goto(self, name, subject=None):
+        self.navigation_visit += 1
+        self.commit_focused_input()
         page = self.pages[name]
         self.expand_navigation(self.nav_group_for[name])
         self.location.setText("BIAP 工作台    /    " + NAV_TEXT.get(name, name))
@@ -286,14 +292,25 @@ class MainWindow(QMainWindow):
             page.on_show()
 
     # ------------------------------------------------------------ 项目
+    def commit_focused_input(self):
+        editor = QApplication.focusWidget()
+        if isinstance(editor, (QLineEdit, QAbstractSpinBox)) and self.stack.isAncestorOf(editor):
+            editor.clearFocus()
+
     def set_project(self, p, quiet=False):
         if self.runner.busy and p is not self.project:
             QMessageBox.information(self, "计算进行中", "当前步骤结束后可以切换项目。")
             return
         if p is not self.project:
+            self.commit_focused_input()
+            if not self.finish_mark_editors():
+                return
+            for viewer in list(self._windows):
+                viewer.close()
             page = self.pages["预处理"]
             page.raw = page.ica = page.raw_ica = page._sig = page.fitted_ica = None
         self.project = p
+        self.reports = self._project_reports.setdefault(os.path.normcase(p.folder), [])
         from .project_bridge import restore_analysis
         restore_analysis(self)
         if self.assistant is not None:
@@ -369,8 +386,15 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         if self.project:
-            self.project.save()
-            self.statusBar().showMessage("项目已保存", 4000)
+            self.commit_focused_input()
+            if not self.finish_mark_editors():
+                return
+            try:
+                self.project.save()
+            except (ValueError, OSError) as exc:
+                QMessageBox.warning(self, "项目未保存", str(exc))
+            else:
+                self.statusBar().showMessage("项目已保存", 4000)
 
     def demo_project(self):
         path = os.path.join(PROJECTS_ROOT, "合成演示项目")
@@ -393,21 +417,45 @@ class MainWindow(QMainWindow):
         self.settings.setValue("theme", new)
 
     def add_report(self, res):
-        self.reports.append((datetime.now(), res))
+        entry = (datetime.now(), res)
+        if res.report_key is not None:
+            for i, (_, previous) in enumerate(self.reports):
+                if previous.report_key == res.report_key:
+                    self.reports.pop(i)
+                    break
+        self.reports.append(entry)
+        if self.stack.currentWidget() is self.pages["报告"]:
+            self.pages["报告"].on_show()
 
-    def keep_window(self, win, on_close=None):
+    def keep_window(self, win, on_close=None, *, record_id=None):
         self._windows.append(win)
         sig = getattr(win, "gotClosed", None)
+        commit = {"record": record_id, "saved": False}
+        if record_id is not None:
+            self._mark_editors[win] = commit
 
         def closed(*_):
-            if win in self._windows:
-                self._windows.remove(win)
-            if on_close:
-                on_close()
+            if win not in self._windows:
+                return
+            self._windows.remove(win)
+            self._mark_editors.pop(win, None)
+            try:
+                commit["saved"] = not on_close or on_close() is not False
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                QMessageBox.warning(self, "标记未保存", str(exc))
         if sig is not None:
             sig.connect(closed)
         elif hasattr(win, "canvas"):
             win.canvas.mpl_connect("close_event", closed)
+
+    def finish_mark_editors(self, record_ids=None):
+        """Commit open waveform editors before a task snapshots its inputs."""
+        for viewer, commit in list(self._mark_editors.items()):
+            if record_ids is None or commit["record"] in record_ids:
+                viewer.close()
+                if not commit["saved"]:
+                    return False
+        return True
 
     # ------------------------------------------------------------ 内部
     def _append_log(self, msg):
@@ -434,6 +482,10 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         if self.runner.busy and QMessageBox.question(self, "还在计算", "还有计算没完成，确定退出吗？") != QMessageBox.Yes:
+            e.ignore()
+            return
+        self.commit_focused_input()
+        if not self.finish_mark_editors():
             e.ignore()
             return
         if self.project:

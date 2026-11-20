@@ -10,7 +10,8 @@ from scipy import stats as sps
 
 from . import advanced, group, stats
 from ..theme import C
-from .single import parse_names
+from .single import channel_tokens
+from .events import time_list
 
 GROUP = "全组"
 
@@ -26,6 +27,7 @@ class Result:
     params: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     table_title: str = "每名被试的数值"
+    report_key: tuple = None                       # 本次计算的数据来源与参数，用于更新会话报告
 
 
 def has_condition(ep, c):
@@ -60,7 +62,7 @@ def _subjects(project, scope, conditions=None, log=print):
 
 
 def _picks(ep, channels):
-    names = parse_names(channels)
+    names = channel_tokens(channels)
     eeg = [ep.ch_names[i] for i in mne.pick_types(ep.info, eeg=True)]
     if not names:
         for c in ("Cz", "Pz", "CPz", "FCz"):
@@ -69,8 +71,8 @@ def _picks(ep, channels):
         return eeg[:1]
     low = {c.lower(): c for c in ep.ch_names}
     out = []
-    for n in names:
-        if n.isdigit() and 0 < int(n) <= len(eeg):
+    for n, literal in names:
+        if not literal and n.isdigit() and 0 < int(n) <= len(eeg):
             out.append(eeg[int(n) - 1])
         elif n.lower() in low:
             out.append(low[n.lower()])
@@ -112,9 +114,15 @@ def _compare_metrics(vals, paired):
     """vals: {条件: 一维数组}。返回 [(名称, 数值, 说明)]。"""
     m = []
     for c, v in vals.items():
-        m.append((f"{c} 平均振幅", f"{v.mean():.2f} µV", f"±{stats.sem(v):.2f} SEM，n={len(v)}"))
+        detail = f"n={len(v)}"
+        if len(v) >= 2:
+            detail += f"，±{stats.sem(v):.2f} SEM"
+        m.append((f"{c} 平均振幅", f"{v.mean():.2f} µV", detail))
     if len(vals) == 2:
         (a_n, a), (b_n, b) = vals.items()
+        if min(len(a), len(b)) < 2:
+            m.append((f"差异 {a_n} − {b_n}", f"{a.mean() - b.mean():.2f} µV", "描述性均值差"))
+            return m
         if paired:
             t, p = sps.ttest_rel(a, b)
             d = (a - b).mean() / ((a - b).std(ddof=1) or np.nan)
@@ -160,13 +168,19 @@ def erp(project, scope, conditions, channels, win, metric_win, test, correction,
         for c in conditions:
             curves[c] = ep[c].get_data(picks=picks).mean(1) * 1e6
             evokeds[c] = [ep[c].average()]
+    if any(len(curve) < 2 for curve in curves.values()):
+        test = "不做检验"
+        res.params["检验"] = test
+        res.notes.append("所选条件中有条件仅保留 1 个试次。波形与平均振幅可查看，未做条件间或逐时间点显著性检验。")
     if test and test != "不做检验":
         res_stat = stats.run_time_test([curves[c][:, w] for c in conditions], test, correction, alpha, n_iter,
                                        factor_levels, cluster_p, log=log)
     else:
         res_stat = None
     unit = "被试" if level == "group" else "试次"
-    title = f"{ch_label}（阴影 = ±1 SEM，n 为{unit}数）"
+    title = f"{ch_label}（n 为{unit}数）"
+    if any(len(curve) > 1 for curve in curves.values()):
+        title = f"{ch_label}（阴影 = ±1 SEM，n 为{unit}数）"
     res.figures.append(("ERP 波形与统计", group.plot_group_erp(times[w], {c: curves[c][:, w] for c in conditions},
                                                              res_stat, None, title)))
     if res_stat is not None:
@@ -184,7 +198,7 @@ def erp(project, scope, conditions, channels, win, metric_win, test, correction,
     has_mont = ep0.get_montage() is not None
     ga = grand[conditions[0]]
     if has_mont:
-        tt = "peaks" if topo_times in ("", "auto") else [float(x) for x in parse_names(topo_times)]
+        tt = "peaks" if topo_times.strip().lower() in ("", "auto", "自动", "峰值") else time_list(topo_times)
         try:
             res.figures.append((f"{conditions[0]} 联合图", ga.plot_joint(times=tt, show=False,
                                                                      title=f"{conditions[0]} 总平均")))
@@ -264,8 +278,11 @@ def tfr(project, scope, conditions, channels, fmin, fmax, fstep, cycles_div, bas
         maps[c] = maps[c][:, :, w]
     tw = times[w]
     masks = {}
+    single_trials = [c for c in conditions if len(maps[c]) == 1]
+    if single_trials:
+        res.notes.append(f"{'、'.join(single_trials)} 各仅保留 1 个试次，展示描述性功率，未对这些条件做显著性检验。")
     for c in conditions:
-        m = group.tfr_cluster(maps[c], p, cluster_p, n_iter) if do_stats else None
+        m = group.tfr_cluster(maps[c], p, cluster_p, n_iter) if do_stats and len(maps[c]) >= 2 else None
         masks[c] = m
         lim = np.nanpercentile(np.abs(maps[c].mean(0)), 98) or 1
         res.figures.append((f"{c} 时频图", group.plot_tfr_map(maps[c].mean(0), freqs, tw, m, (-lim, lim),
@@ -282,19 +299,24 @@ def tfr(project, scope, conditions, channels, fmin, fmax, fstep, cycles_div, bas
         lim = np.nanpercentile(np.abs(dmean), 98) or 1
         res.figures.append(("差异时频图", group.plot_tfr_map(dmean, freqs, tw, m, (-lim, lim),
                                                           f"{conditions[0]} − {conditions[1]}", cbar="ΔdB")))
-    if do_stats:
+    if any(mask is not None for mask in masks.values()):
         res.notes.append("虚线圈出 cluster 置换检验显著的区域：黄色 = 高于基线 / 条件 1 更高，青色 = 低于。")
     fb = (freqs >= metric_band[0]) & (freqs <= metric_band[1])
     mwi = _window(tw, metric_win)
     vals = {c: maps[c][:, fb][:, :, mwi].mean(axis=(1, 2)) for c in conditions}
     for c, v in vals.items():
-        tt, pp = sps.ttest_1samp(v, 0)
-        res.metrics.append((f"{c} {metric_band[0]:g}–{metric_band[1]:g} Hz", f"{v.mean():+.2f} dB",
-                            f"{metric_win[0]}–{metric_win[1]} s；与基线比 p {_fmt_p(pp)}"))
+        detail = f"{metric_win[0]}–{metric_win[1]} s，n={len(v)}"
+        if len(v) >= 2:
+            _, pp = sps.ttest_1samp(v, 0)
+            detail += f"，与基线比 p {_fmt_p(pp)}"
+        res.metrics.append((f"{c} {metric_band[0]:g}–{metric_band[1]:g} Hz", f"{v.mean():+.2f} dB", detail))
     if len(conditions) == 2:
         a, b2 = vals[conditions[0]], vals[conditions[1]]
-        tt, pp = sps.ttest_rel(a, b2) if level == "group" else sps.ttest_ind(a, b2)
-        res.metrics.append(("条件差异", f"{(a.mean() - b2.mean()):+.2f} dB", f"p {_fmt_p(pp)}"))
+        detail = "描述性均值差"
+        if min(len(a), len(b2)) >= 2:
+            _, pp = sps.ttest_rel(a, b2) if level == "group" else sps.ttest_ind(a, b2)
+            detail = f"p {_fmt_p(pp)}"
+        res.metrics.append(("条件差异", f"{(a.mean() - b2.mean()):+.2f} dB", detail))
     # 频段功率地形图（总平均）
     if ep0.get_montage() is not None:
         try:

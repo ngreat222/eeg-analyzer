@@ -47,9 +47,10 @@ jobs:
       - name: 打包 .app 和 .dmg
         run: python build_exe.py --dmg
 
-      - name: 自检（无界面模式）
+      - name: 自检（含波形窗口交互）
+        timeout-minutes: 20
         env:
-          QT_QPA_PLATFORM: offscreen
+          QT_QPA_PLATFORM: cocoa
         run: |
           set +e
           "dist/脑电分析软件.app/Contents/MacOS/脑电分析软件" --selftest "$PWD/selftest-${{ matrix.arch }}.txt"

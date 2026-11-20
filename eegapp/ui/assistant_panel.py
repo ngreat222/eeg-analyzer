@@ -10,14 +10,13 @@ from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QEvent, QIODevice, QModelIndex, QSaveFile, QSettings, Qt, QThread, Signal)
 from PySide6.QtGui import QDrag, QIcon, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog,
     QFrame, QComboBox, QFormLayout, QMenu, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QStackedWidget, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTabWidget, QTableView,
-    QTextBrowser, QVBoxLayout, QWidget)
+    QSizePolicy, QTextBrowser, QVBoxLayout, QWidget)
 
 from eegapp import theme
 from eegapp.core import workbench as engine, attachments
-from .widgets import WrappedLabel
 from .chat_transcript import ChatTranscript
 from . import project_bridge as bridge
 
@@ -44,6 +43,15 @@ def panel():
     layout.setContentsMargins(16, 14, 16, 14)
     layout.setSpacing(8)
     return w, layout
+
+
+class ReviewImage(QLabel):
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class RefList(QListWidget):
@@ -84,6 +92,19 @@ class RefList(QListWidget):
 
 class Composer(QPlainTextEdit):
     send_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.document().setDocumentMargin(3)
+        self.document().documentLayout().documentSizeChanged.connect(self.fit_text)
+        self.fit_text()
+
+    def fit_text(self, *_):
+        # QPlainTextDocumentLayout reports its height in wrapped lines.
+        lines = min(5, max(2, int(self.document().size().height())))
+        height = lines * (self.fontMetrics().lineSpacing() + 2) + 2 * (self.frameWidth() + 3)
+        if self.height() != height:
+            self.setFixedHeight(height)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() and not event.isAutoRepeat():
@@ -129,11 +150,18 @@ class Worker(QThread):
     error = Signal(str)
     progress = Signal(object)
     workflow_requested = Signal(object)
+    workspace_requested = Signal(object)
     view_requested = Signal(object)
 
     def workflow_call(self, op, data=None):
+        return self._ui_request(self.workflow_requested, op, data)
+
+    def work_window(self, args):
+        return self._ui_request(self.workspace_requested, args)
+
+    def _ui_request(self, signal, *args):
         reply = Queue(1)
-        self.workflow_requested.emit((op, data, reply))
+        signal.emit((*args, reply))
         while not self.isInterruptionRequested():
             try:
                 result = reply.get(timeout=.25)
@@ -157,10 +185,20 @@ class Worker(QThread):
     def __init__(self, args):
         super().__init__()
         self.args = args
+        self.started_tools = False
+        self.partial_result = ([], [])
+        self.retry_cancel = None
 
     def run(self):
+        def notify(event):
+            if event.get("phase") == "start":
+                self.started_tools = True
+            self.progress.emit(event)
         try:
-            self.result.emit(engine.discuss(*self.args, progress=self.progress.emit))
+            self.result.emit(engine.discuss(*self.args, progress=notify, cancelled=self.isInterruptionRequested))
+        except engine.ModelRequestError as exc:
+            self.partial_result = exc.proposals, exc.trace
+            self.error.emit(str(exc))
         except Exception as e:
             self.error.emit(str(e))
 
@@ -178,6 +216,7 @@ class Studio(QMainWindow):
         self.refs, self.history, self.proposals, self.undo = [], [], [], []
         self.worker = None
         self.workflow = None
+        self.previous_workflow = None
         self.desktop = None
         self.review_links = []
         self.trace = []
@@ -262,13 +301,16 @@ class Studio(QMainWindow):
 
         box = QFrame()
         box.setObjectName("composer")
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         compose = QVBoxLayout(box)
+        compose.setContentsMargins(10, 8, 10, 8)
+        compose.setSpacing(5)
         self.attachbar = QWidget()
         chiprow = QHBoxLayout(self.attachbar)
         chiprow.setContentsMargins(0, 0, 0, 0)
-        self.attachment_label = WrappedLabel()
-        self.attachment_label.setWordWrap(True)
-        chiprow.addWidget(self.attachment_label, 1)
+        self.attachment_label = button("", self.show_references)
+        chiprow.addWidget(self.attachment_label)
+        chiprow.addStretch(1)
         self.image_button = button("查看图片", self.show_images)
         chiprow.addWidget(self.image_button)
         chiprow.addWidget(button("移除引用", self.clear_refs))
@@ -278,7 +320,6 @@ class Studio(QMainWindow):
         self.desktop_indicator.hide()
         compose.addWidget(self.desktop_indicator)
         self.edit = Composer()
-        self.edit.setMaximumHeight(92)
         self.edit.setPlaceholderText("直接问我，也可以把流程、步骤或文件拖到这里…")
         self.edit.send_requested.connect(self.submit)
         compose.addWidget(self.edit)
@@ -340,7 +381,7 @@ class Studio(QMainWindow):
             QPushButton#ActivityHeading {{background:transparent;border:0;text-align:left;color:{c['muted']};padding:3px 0;}}
             QPushButton#ReviewChanges {{background:{c['soft']};color:{c['on_soft']};border:0;padding:6px 12px;}}
             QFrame#composer {{border:1px solid {c['line']};border-radius:17px;background:{c['field']};}}
-            QFrame#composer QPlainTextEdit {{border:0;background:transparent;}}
+            QFrame#composer QPlainTextEdit {{border:0;padding:0;background:transparent;}}
             QPushButton#primary {{background:{c['accent']};color:white;border-color:{c['accent']};}}
         """)
 
@@ -381,6 +422,7 @@ class Studio(QMainWindow):
 
     def bind_project(self):
         self.stop_workflow()
+        self.previous_workflow = None
         self.stop_desktop()
         if self.worker is not None:
             self.worker.bound = object()
@@ -520,10 +562,25 @@ class Studio(QMainWindow):
         return key,self.provider,self.prefs.value(self.provider+"/model",model),base
 
     def sync_refs(self):
-        self.attachment_label.setText("  ·  ".join(f"{n}（{self.files[n]['kind']}）" if k=="attachment" else n for k,n in self.refs))
+        self.attachment_label.setText(f"{len(self.refs)} 个引用")
+        metrics = self.attachment_label.fontMetrics()
+        self.attachment_label.setToolTip("\n".join(metrics.elidedText(name, Qt.ElideMiddle, 320)
+                                                   for _, name in self.refs[:5]))
         self.image_button.setVisible(any(f["kind"] == "图片预览" for f in self.files.values()))
         self.attachbar.setVisible(bool(self.refs))
         self.edit.setFocus()
+
+    def show_references(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("本轮引用")
+        layout = QVBoxLayout(dialog)
+        names = [f"{name}（{self.files[name]['kind']}）" if kind == "attachment" else name for kind, name in self.refs]
+        layout.addWidget(self.text_view("\n".join(names)))
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(540, 280)
+        dialog.exec()
 
     def open_review(self):
         if self.proposals:
@@ -611,6 +668,7 @@ class Studio(QMainWindow):
     def reset_chat(self):
         if self.worker and self.worker.isRunning():
             return self.warn("请等本轮请求结束。")
+        self.previous_workflow = None
         self.toggle_library(False)
         self.stop_desktop()
         self.history.clear()
@@ -653,26 +711,129 @@ class Studio(QMainWindow):
             self.warn(exc)
 
     def show_images(self):
-        images = {name: item["path"] for name, item in self.files.items() if item["kind"] == "图片预览"}
+        images = {name: item for name, item in self.files.items() if item["kind"] == "图片预览"}
         if not images:
             return
+        project = self.bound
+        page = self.host.pages["预处理"] if self.host and project else None
+        original, draft = {}, {}
+        can_confirm = False
         dlg = QDialog(self)
         dlg.setWindowTitle("本轮图片")
         layout = QVBoxLayout(dlg)
         picker = QComboBox()
         picker.addItems(images.keys())
-        label = QLabel()
+        label = ReviewImage()
+        label.setObjectName("icaImage")
         label.setAlignment(Qt.AlignCenter)
+        check = QCheckBox()
+        check.setObjectName("icaExclude")
+        status = QLabel()
+        status.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        save = buttons.addButton("保存 ICA 标记", QDialogButtonBox.AcceptRole)
+        save.setObjectName("saveIcaMarks")
+        save.setVisible(any("ica" in image for image in images.values()))
+        buttons.rejected.connect(dlg.reject)
+
+        def marks(item):
+            if not page or self.bound is not project or self.host.project is not project:
+                raise ValueError("项目已切换，请在当前记录重新生成成分图。")
+            _, rec = page.check_fit(item["fit"])
+            if rec.id != item["record"]:
+                raise ValueError("图片与当前记录不匹配，请重新生成成分图。")
+            return page.marked_components()
+
+        def update_save():
+            modified = draft != original
+            save.setEnabled(modified or can_confirm)
+            save.setText("确认当前 ICA 清单" if can_confirm and not modified else "保存 ICA 标记")
+
+        def edited(value):
+            name = picker.currentText()
+            if name in original:
+                draft[name] = value
+            update_save()
+
         def show(name):
-            pix = QPixmap(images[name])
+            nonlocal can_confirm
+            can_confirm = False
+            info = images[name]
+            pix = QPixmap(info["path"])
             if pix.isNull():
                 label.setText("图片预览不可用")
             else:
                 screen = dlg.screen().availableGeometry()
-                label.setPixmap(pix.scaled(int(screen.width()*.75), int(screen.height()*.72),
+                label.setPixmap(pix.scaled(int(screen.width()*.72), int(screen.height()*.62),
                                            Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            item = info.get("ica")
+            check.setVisible(bool(item))
+            status.setVisible(bool(item))
+            check.setEnabled(False)
+            label.unsetCursor()
+            if item:
+                check.setText(f"标记排除 IC-{item['component']:03d}")
+                try:
+                    current = marks(item)
+                    original.setdefault(name, item["component"] in current)
+                    draft.setdefault(name, original[name])
+                    check.setChecked(draft[name])
+                    check.setEnabled(not pix.isNull())
+                    if not pix.isNull():
+                        label.setCursor(Qt.PointingHandCursor)
+                    status.setText(f"{item['record']} · 点击图片可切换标记。保存后，重新处理这条记录即可应用。")
+                    record = project.get_rec(item["record"])[1]
+                    can_confirm = not pix.isNull() and (not record.ica_manual or record.reviewed_ica != page.fit_identity)
+                    if can_confirm:
+                        listing = "、".join(f"IC-{idx:03d}" for idx in sorted(current)) or "无"
+                        status.setText(status.text() + f" 当前整条记录的排除清单：{listing}。")
+                except ValueError as exc:
+                    check.setChecked(False)
+                    status.setText(str(exc))
+            update_save()
+
+        def commit():
+            changed = [name for name in draft if draft[name] != original[name]]
+            if not changed:
+                if not can_confirm:
+                    return
+                changed = [picker.currentText()]
+            try:
+                first = images[changed[0]]["ica"]
+                current = marks(first)
+                wanted = current.copy()
+                for name in changed:
+                    item = images[name]["ica"]
+                    idx = item["component"]
+                    if (item["fit"], item["record"]) != (first["fit"], first["record"]):
+                        raise ValueError("图片来自不同的分解，请在当前记录重新生成成分图。")
+                    if (idx in current) != original[name]:
+                        raise ValueError(f"IC-{idx:03d} 的标记已经变化，请重新打开图片核对。")
+                    if draft[name]:
+                        wanted.add(idx)
+                    else:
+                        wanted.discard(idx)
+                page.set_component_marks(first["fit"], wanted)
+                stored = bridge.saved_record_ica(project.json_path, first["record"])
+            except (ValueError, RuntimeError, KeyError, OSError) as exc:
+                status.show()
+                status.setText(str(exc))
+                return
+            ids = "、".join(f"IC-{idx:03d}" for idx in stored["排除成分"]) or "无"
+            next_step = "重新处理这条记录后生效" if stored["启用ICA"] else "启用 ICA 并重新处理这条记录后生效"
+            message = f"{first['record']} · 已保存的 ICA 排除清单：{ids}。{next_step}。"
+            self.say("当前项目", message)
+            self.history.append({"role":"user", "content":message})
+            dlg.accept()
+
         layout.addWidget(picker)
-        layout.addWidget(label)
+        layout.addWidget(label, 1)
+        layout.addWidget(check)
+        layout.addWidget(status)
+        layout.addWidget(buttons)
+        label.clicked.connect(lambda: check.click() if not check.isHidden() and check.isEnabled() else None)
+        check.clicked.connect(edited)
+        save.clicked.connect(commit)
         picker.currentTextChanged.connect(show)
         show(picker.currentText())
         dlg.exec()
@@ -683,7 +844,8 @@ class Studio(QMainWindow):
         for name, info in list(self.files.items()):
             old = info.get("ica")
             if old and (old["fit"] != token or old["component"] in picks):
-                self.refs.remove(("attachment", name))
+                if ("attachment", name) in self.refs:
+                    self.refs.remove(("attachment", name))
                 del self.files[name]
         for i, path in zip(picks, paths):
             name = self.add_attachment(path)
@@ -798,6 +960,21 @@ class Studio(QMainWindow):
     def submit(self):
         q=self.edit.toPlainText().strip()
         if not q or not self.send.isEnabled(): return
+        checkpoint = None
+        if self.previous_workflow and q.rstrip("。！!") in ("停止任务", "停止工作流", "取消任务", "不继续了"):
+            self.previous_workflow.cancel()
+            self.edit.clear()
+            self.say("你", q)
+            self.say("工作窗口", "已停止上次任务。")
+            return
+        if self.bound and self.previous_workflow and engine.requested_workflow_resume(q):
+            try:
+                checkpoint = self.previous_workflow.continuation()
+            except (KeyError, ValueError, OSError) as exc:
+                self.edit.clear()
+                self.say("你", q)
+                self.say("工作窗口", str(exc))
+                return
         connection = self.connection()
         if not connection[0] and (self.provider,connection[3]) not in self.keys:
             if not self.configure():
@@ -819,6 +996,7 @@ class Studio(QMainWindow):
         state["attachments"]=deepcopy(self.files)
         if bound:
             state["read_saved"] = partial(bridge.saved_parameters, bound.json_path)
+            state["read_record_ica"] = partial(bridge.saved_record_ica, bound.json_path)
             state["local_records"] = deepcopy({rec.id: (subject, rec) for subject, rec in bound.recordings()})
             state["local_pipeline"] = deepcopy(bound.pipeline)
             state["quality_threshold"] = self.host.pages["预处理"].segment_limit.value()
@@ -837,10 +1015,31 @@ class Studio(QMainWindow):
         self.say("你",q)
         args=(state,list(self.refs),list(self.history),q,*connection)
         worker=Worker(args)
+        if self.host is not None:
+            from .workspace_controls import WorkWindow
+            from .main_window import NAV_TEXT
+            worker.workspace = WorkWindow(self)
+            page, rid, scope = worker.workspace.location()
+            state["window_context"] = {"页面":page, "当前记录":rid, "分析范围":scope,
+                                       "可打开页面":{key:NAV_TEXT.get(key, key) for key in self.host.pages}}
+            state["work_window"] = worker.work_window
+            worker.workspace_requested.connect(self.dispatch_workspace)
         if bound:
+            records = state["local_records"]
+            state["read_events"] = lambda rid: bridge.event_table(bound, records[rid][1])
             state["show_parameters"] = worker.request_view
             from .record_workflow import RecordWorkflow, current_record
-            self.workflow = RecordWorkflow(self, current_record(self.host))
+            if checkpoint:
+                self.workflow = self.previous_workflow
+                state["workflow_resume"] = checkpoint
+                self.workflow_bar.show()
+                self.say("工作窗口", f"继续 {self.workflow.rid} · 下一步是{checkpoint['下一步']}。")
+            else:
+                self.workflow = RecordWorkflow(self, current_record(self.host), q)
+                if engine.requested_record_run(q) or engine.requested_single_step(q, self.refs):
+                    self.previous_workflow = None
+            if self.workflow.ref_records:
+                state["window_context"]["任务引用记录"] = sorted(self.workflow.ref_records)
             state["workflow_call"] = worker.workflow_call
             worker.workflow_requested.connect(self.dispatch_workflow)
             worker.view_requested.connect(self.open_parameter_view)
@@ -856,6 +1055,20 @@ class Studio(QMainWindow):
         worker.error.connect(self.on_request_error)
         worker.finished.connect(self.finished)
         worker.start()
+
+    def dispatch_workspace(self, request):
+        args, reply = request
+        worker = self.sender()
+        try:
+            if worker is not self.worker or worker.bound is not self.host.project or worker.isInterruptionRequested():
+                raise ValueError("任务已停止或项目已切换。")
+            workflow = self.workflow
+            if workflow and workflow.analysis and workflow.index < len(workflow.stages):
+                workflow.operate_window(worker.workspace, args, reply)
+            else:
+                worker.workspace.perform(args, reply)
+        except Exception as exc:
+            reply.put(exc)
 
     def dispatch_workflow(self, request):
         if self.sender() is not self.worker or not self.workflow or self.worker.bound is not self.bound:
@@ -897,7 +1110,12 @@ class Studio(QMainWindow):
                 raise ValueError("该步骤没有可打开的参数页。")
             page = self.host.pages[page_name]
             self.host.work_action.setChecked(True)
-            if self.host.stack.currentWidget() is not page:
+            workflow = self.workflow
+            if workflow and workflow.analysis and workflow.index < len(workflow.stages) and page_name in ("预处理","事件"):
+                workflow.navigate(page_name)
+            elif workflow and workflow.record_analysis() and page_name == workflow.analysis:
+                workflow.show_record_analysis()
+            elif self.host.stack.currentWidget() is not page:
                 self.host.goto(page_name)
             page.show_settings(True)
             control = getattr(page, next(iter(fields.values())))
@@ -915,6 +1133,16 @@ class Studio(QMainWindow):
     def on_tool_progress(self, event):
         worker = self.sender()
         if worker is self.worker and worker.bound is self.bound:
+            if event["phase"] == "retry":
+                worker.activity.action = event["label"]
+                worker.activity.tick()
+                if worker.retry_cancel is None:
+                    worker.retry_cancel = self.chat.action_button("停止本次请求", worker.requestInterruption)
+                    worker.finished.connect(worker.retry_cancel.hide)
+                worker.retry_cancel.show()
+                return
+            if worker.retry_cancel is not None:
+                worker.retry_cancel.hide()
             worker.activity.record(event)
 
     def on_answer(self, out):
@@ -931,10 +1159,24 @@ class Studio(QMainWindow):
     def on_request_error(self, msg):
         worker = self.sender()
         if worker is self.worker and worker.bound is self.bound:
-            worker.activity.finish(error=True)
-            self.say("请求失败", msg)
+            stopped = msg == "已停止等待模型回复。"
+            worker.activity.finish(error=not stopped)
+            if worker.started_tools:
+                proposals, trace = worker.partial_result
+                self.trace.extend(trace)
+                msg += " 本轮操作记录已保留，请查看执行记录，再决定从哪一步继续。"
+                self.history.extend([{"role":"user","content":worker.question},
+                                     {"role":"assistant","content":msg}])
+                self.add_proposals(proposals)
+            elif not self.edit.toPlainText().strip():
+                self.edit.setPlainText(worker.question)
+            self.say("已停止" if stopped else "请求失败", msg)
 
     def finished(self):
+        if self.workflow and self.workflow.analysis and self.worker.bound is self.bound:
+            if self.worker.isInterruptionRequested():
+                self.workflow.cancel()
+            self.previous_workflow = self.workflow
         self.workflow = None
         self.workflow_bar.hide()
         self.workflow_pause.setChecked(False)
@@ -980,10 +1222,20 @@ class Studio(QMainWindow):
         self.add_proposals(props)
 
     def add_proposals(self,props):
+        incoming = {(p["fit"], p["component"]) for p in props if p["kind"] == "ica"}
+        for i in reversed(range(len(self.proposals))):
+            old = self.proposals[i]
+            if old["kind"] == "ica" and (old["fit"], old["component"]) in incoming:
+                self.proposals.pop(i)
+                self.pending.takeItem(i)
+        if incoming:
+            self.update_review_links()
         first_new=len(self.proposals)
         for p in props:
             if self.bound:
                 p["project_folder"]=self.bound.folder
+                if p.get("event_record"):
+                    self.event_refs[p["name"]] = p["event_record"]
                 if p["kind"]=="table" and p["name"] in self.event_refs:
                     try: df=bridge.normalized_events(p["after"])
                     except ValueError as exc:
@@ -1025,7 +1277,7 @@ class Studio(QMainWindow):
         p=self.proposals[index]
         if self.bound:
             dest = self.bound.name+" · "+p["name"]
-            if p["name"] in self.event_refs: dest+="（当前记录的事件表；需重新分段）"
+            if p["name"] in self.event_refs: dest+="（采用后需重新分段）"
             elif p["kind"]=="table": dest+="（项目工作表副本）"
             elif p["kind"]=="order" or p["name"] in bridge.PRE:
                 dest+="（需重新分段）" if p["name"]=="事件分段" else "（需重新预处理、分段）"
@@ -1053,7 +1305,7 @@ class Studio(QMainWindow):
                 self.tabs.addTab(table_view(obj),f"{title} · {len(obj['rows'])}行/{len(obj['columns'])}列")
             else:
                 self.tabs.addTab(self.text_view(display(obj)),title)
-        if p["code"]: self.tabs.addTab(self.text_view(p["code"]),"SQL 程序")
+        if p["code"]: self.tabs.addTab(self.text_view(p["code"]), "事件说明" if p.get("event_record") else "SQL 程序")
         self.tabs.setCurrentIndex(0 if p["kind"]=="table" else 1)
 
     def dismiss(self):
@@ -1081,6 +1333,9 @@ class Studio(QMainWindow):
                                    identity=rec.reviewed_ica)
                 self.write_project(chosen)
                 inverse=[dict(p,before=p["after"],after=p["before"],base=engine.stamp(p["after"])) for p in reversed(chosen)]
+                for change in inverse:
+                    change.pop("event_source", None)
+                    change.pop("source_base", None)
                 if restore:
                     next(p for p in inverse if p["kind"] == "ica")["restore_marks"] = restore
                 self.undo=(self.undo+[inverse])[-8:]
@@ -1108,8 +1363,8 @@ class Studio(QMainWindow):
         self.say("当前项目" if self.bound else "工作副本",msg)
         self.history.append({"role":"user","content":msg})
 
-    def write_project(self, chosen):
-        bridge.apply_selected(self.host,chosen,self.state["tables"])
+    def write_project(self, chosen, *, record_analysis=None):
+        bridge.apply_selected(self.host,chosen,self.state["tables"], record_analysis=record_analysis)
         for prop in chosen:
             if prop["kind"]=="table": self.state["tables"][prop["name"]]=prop["after"]
         self.current_snapshot()

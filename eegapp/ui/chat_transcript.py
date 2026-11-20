@@ -75,14 +75,14 @@ class Activity(QFrame):
 
     def record(self, event):
         phase = event["phase"]
+        target = str(event.get("target_label", event.get("args", {}).get("target", "")))
         if phase == "waiting":
             self.action = "等待模型回复" if not self.entries else "正在整理工具结果"
         elif phase == "start":
-            self.action = event["label"] + " " + str(event["args"].get("target", ""))
+            self.action = (event["label"] + " " + target).strip()
         else:
-            target = str(event.get("args", {}).get("target", ""))
             result = event["result"]
-            outcome = "失败" if phase == "error" else result.get("status", "完成")
+            outcome = "失败" if phase == "error" else result.get("状态", result.get("status", "完成"))
             title = f"{event['label']}  {target}  ·  {outcome}"
             toggle = QPushButton(title)
             toggle.setObjectName("ActivityHeading")
@@ -145,7 +145,14 @@ class ChatTranscript(QScrollArea):
         author.setTextFormat(Qt.PlainText)
         author.setObjectName("MessageAuthor")
         box.addWidget(author)
-        box.addWidget(MessageBody(text, markdown))
+        body = MessageBody(text, markdown)
+        box.addWidget(body)
+        # Keep one-line replies compact. Long messages still wrap as the pane narrows.
+        max_width = 720
+        if "\n" not in text and len(text) < 80:
+            content_width = max(author.sizeHint().width(), body.fontMetrics().horizontalAdvance(text))
+            max_width = min(max_width, content_width + 36)
+        card.setMaximumWidth(max_width)
         if mine:
             row.addStretch(1)
         row.addWidget(card, 5)

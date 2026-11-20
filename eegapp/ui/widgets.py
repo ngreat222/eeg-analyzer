@@ -445,9 +445,10 @@ class ResultView(QScrollArea):
                 lay.addWidget(FigureCard(t, f))
                 i += 1
         if res.table:
-            from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+            from PySide6.QtWidgets import QAbstractItemView, QTableWidget, QTableWidgetItem
             head, rows = res.table
             tb = QTableWidget(len(rows), len(head))
+            tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
             tb.setHorizontalHeaderLabels(head)
             tb.verticalHeader().setVisible(False)
             tb.setAlternatingRowColors(True)

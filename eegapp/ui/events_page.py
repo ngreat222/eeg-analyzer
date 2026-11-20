@@ -3,11 +3,12 @@
 事件和数据分开保存，任何时候都可以改；改完重新分段即可。没有事件也可以按固定长度分段。
 """
 import os
+from copy import copy
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
-                               QHeaderView, QListWidgetItem, QMessageBox, QPlainTextEdit, QScrollArea,
+                               QHeaderView, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import analysis, events as ev, project as pj, reading
@@ -41,6 +42,7 @@ class EventsPage(BasePage):
         self.metrics = MetricGrid(3)
         cl.addWidget(self.metrics)
         kinds = Card("事件种类", "选中一行或几行，可在「参数设置 → 整理」中平移或删除；名字以 BAD_ 开头的表示坏段，分段时跳过")
+        kinds.head.addWidget(btn("在波形上标事件", self.mark_on_wave, None, "mdi6.cursor-default-click-outline"))
         self.kinds = QTableWidget(0, 3)
         self.kinds.setHorizontalHeaderLabels(["事件", "个数", "第一次出现（秒）"])
         self.kinds.verticalHeader().setVisible(False)
@@ -73,7 +75,7 @@ class EventsPage(BasePage):
 
         s = self.section("整理")
         self.rules = s.row("改名规则", QPlainTextEdit())
-        self.rules.setPlaceholderText("每行一条：旧=新\n9xx=刺激出现（x 代表任意一位数字）\n1=睁眼\nS*=刺激")
+        self.rules.setPlaceholderText("1 改为 睁眼\n2 → 闭眼\n9xx=刺激出现（x 代表任意一位数字）")
         self.rules.setFixedHeight(92)
         s.widget(hbox(btn("改名", self.rename, None, "mdi6.rename-outline"),
                       btn("用到所有记录", lambda: self.rename(all_recs=True), "ghost")))
@@ -82,6 +84,8 @@ class EventsPage(BasePage):
                       btn("删除所选种类", self.delete, "danger", "mdi6.delete-outline")))
 
         s = self.section("分段")
+        self.epoch_input = s.row("当前记录的输入", combo([]))
+        self.epoch_input.setAccessibleName("当前记录的分段输入")
         self.mode = s.row("分段方式", combo([pj.EPOCH_EVENTS, pj.EPOCH_FIXED]))
         self.mode.currentTextChanged.connect(self._mode_changed)
         self.ev_list = s.row("用哪些事件", CheckList(140))
@@ -95,9 +99,22 @@ class EventsPage(BasePage):
         self.rej = s.row("振幅剔除（峰峰值）", fspin(150, 0, 1e5, 10, 0, " µV"))
         s.widget(label("0 表示不剔除。剔除太多时，结果里会列出“剔除最多的通道”，通常把它标成坏导更好。", "Muted", wrap=True))
         self.end_side()
-        self.action_row(btn("分段这个被试", self.epoch_one, "primary", "mdi6.content-cut"),
+        self.action_row(btn("只分段当前记录", self.epoch_record, "primary", "mdi6.content-cut"),
+                        btn("分段这个被试", self.epoch_one, None, "mdi6.account-outline"),
                         btn("批量分段全部", self.epoch_all, None, "mdi6.lightning-bolt-outline"))
         self._mode_changed(self.mode.currentText())
+        self._bound_project = None
+        self._loading_settings = False
+        self._pipe_controls = {
+            "epoch_mode": self.mode, "tmin": self.tmin, "tmax": self.tmax, "baseline": self.bl_on,
+            "bl0": self.b0, "bl1": self.b1, "fixed_len": self.flen, "fixed_overlap": self.fov,
+            "reject_uv": self.rej,
+        }
+        for key, widget in self._pipe_controls.items():
+            signal = (widget.currentTextChanged if widget is self.mode else widget.toggled if widget is self.bl_on
+                      else widget.valueChanged)
+            signal.connect(lambda *_, field=key: self._edited(field))
+        self.ev_list.itemChanged.connect(lambda _: self._edited("events"))
 
     # ------------------------------------------------------------ 设置
     def _mode_changed(self, m):
@@ -109,27 +126,56 @@ class EventsPage(BasePage):
 
     def _load_pipe(self):
         p = self.project.pipeline
-        self.mode.setCurrentText(p.epoch_mode)
-        self.tmin.setValue(p.tmin)
-        self.tmax.setValue(p.tmax)
-        self.bl_on.setChecked(p.baseline)
-        self.b0.setValue(p.bl0)
-        self.b1.setValue(p.bl1)
-        self.flen.setValue(p.fixed_len)
-        self.fov.setValue(p.fixed_overlap)
-        self.rej.setValue(p.reject_uv)
+        from .project_bridge import put_control
+        self._loading_settings = True
+        try:
+            for name, widget in self._pipe_controls.items():
+                put_control(widget, getattr(p, name))
+        finally:
+            self._loading_settings = False
 
-    def _save_pipe(self):
-        p = self.project.pipeline
-        p.epoch_mode = self.mode.currentText()
-        p.tmin, p.tmax, p.baseline = self.tmin.value(), self.tmax.value(), self.bl_on.isChecked()
-        p.bl0, p.bl1 = self.b0.value(), self.b1.value()
-        p.fixed_len, p.fixed_overlap, p.reject_uv = self.flen.value(), self.fov.value(), self.rej.value()
-        if self.ev_list.count():
-            all_ev = self.ev_list.names()
-            sel = self.ev_list.checked()
-            p.events = [] if set(sel) == set(all_ev) else sel
-        self.project.save()
+    def _edited(self, field):
+        if (self._loading_settings or self.project is None or self._bound_project is not self.project
+                or self.ctx.stack.currentWidget() is not self):
+            return
+        try:
+            self._save_pipe(field)
+        except (OSError, ValueError) as exc:
+            self._load_pipe()
+            self._refresh_event_choices()
+            QMessageBox.warning(self, "分段设置未保存", str(exc))
+        else:
+            self.ctx.statusBar().showMessage("已保存分段设置，下次分段时使用。", 3500)
+
+    def _save_pipe(self, field=None):
+        from .project_bridge import read_control
+        project = self.project
+        staged = copy(project)
+        staged.pipeline = copy(project.pipeline)
+        for name, widget in self._pipe_controls.items():
+            if field is None or field == name:
+                setattr(staged.pipeline, name, read_control(widget))
+        if field == "events":
+            selected = self.ev_list.checked()
+            staged.pipeline.events = [] if set(selected) == set(self.ev_list.names()) else selected
+            staged.pipeline.events_explicit = not selected
+        if staged.pipeline == project.pipeline:
+            return
+        staged.subjects = [copy(subject) for subject in project.subjects]
+        for subject in staged.subjects:
+            if subject.recordings:
+                subject.recordings = [copy(r) for r in subject.recordings]
+                for rec in subject.recordings:
+                    rec.record_epochs_file = ""
+                subject.status, subject.epochs_file, subject.n_trials = pj.STATUS_RAW, "", {}
+        staged.save()
+        project.pipeline, project._saved_bytes = staged.pipeline, staged._saved_bytes
+        for subject, saved in zip(project.subjects, staged.subjects):
+            if subject.recordings:
+                for rec in subject.recordings:
+                    rec.record_epochs_file = ""
+                subject.status, subject.epochs_file, subject.n_trials = saved.status, saved.epochs_file, saved.n_trials
+                project._cache.pop(subject.name, None)
 
     def _refresh_event_choices(self):
         """所有记录里出现过的事件名（不含坏段）。"""
@@ -141,7 +187,8 @@ class EventsPage(BasePage):
                 names += ev.names(ev.load(path))
         names = list(dict.fromkeys(names))
         chosen = p.pipeline.events
-        self.ev_list.set_items(names, checked=[n for n in chosen if n in names] or names)
+        selected = chosen if chosen or p.pipeline.events_explicit else names
+        self.ev_list.set_items(names, checked=selected, default_all=False)
 
     # ------------------------------------------------------------ 显示
     def _current(self):
@@ -156,6 +203,7 @@ class EventsPage(BasePage):
     def on_show(self, subject=None):
         super().on_show()
         p = self.project
+        self._bound_project = p
         cur = subject or self.recs.currentData()
         self.recs.blockSignals(True)
         self.recs.clear()
@@ -170,7 +218,6 @@ class EventsPage(BasePage):
             if index < 0 and subject:
                 index = next((i for i, (subj, _) in enumerate(p.recordings()) if subj.name == subject), -1)
             self.recs.setCurrentIndex(max(0, index) if self.recs.count() else -1)
-            self._refresh_event_choices()
         self.recs.blockSignals(False)
         self._select()
 
@@ -193,9 +240,18 @@ class EventsPage(BasePage):
             self._set_fig(None)
             return
         s, r = cur
+        has_result = pj.has_continuous_result(self.project, r)
+        old_key = getattr(self, "_input_key", None)
+        self._input_key = (self.project, r.id, r.clean_file, has_result)
+        if old_key != self._input_key:
+            self.epoch_input.clear()
+            if has_result:
+                self.epoch_input.addItem(r.status + "的连续数据", "current")
+            self.epoch_input.addItem("原始记录", "raw")
         try:
             df = self.project.events(r, log=log)
             h = self._header(r)
+            self._refresh_event_choices()
         except Exception as e:  # noqa: BLE001
             self.head.setText(f"{r.id}：读取失败 {e}")
             return
@@ -205,7 +261,7 @@ class EventsPage(BasePage):
         self.metrics.set([("事件", str(len(df)), f"{len([1 for n, _, _ in items if not ev.is_bad(n)])} 种"),
                           ("坏段", str(int(df['description'].map(ev.is_bad).sum())) if len(df) else "0",
                            "名字以 BAD_ 开头"),
-                          ("预处理", r.status, "分段要用预处理后的数据")])
+                          ("预处理", r.status, "可直接分段，或在参数设置中选择输入")])
         self.kinds.setRowCount(len(items))
         for i, (n, c, t0) in enumerate(items):
             for j, v in enumerate([n, str(c), f"{t0:.2f}"]):
@@ -243,9 +299,19 @@ class EventsPage(BasePage):
     def _store(self, r, df, msg, replace=False):
         old = self.project.events(r, log=log)
         new = ev.tidy(df) if replace else ev.merge(old, df)
-        self.project.save_events(r, new)
+        if not self._save_table(r, new):
+            return False
         log(f"{r.id}：{msg}（现在共 {len(new)} 个事件）")
         self._after_change()
+        return True
+
+    def _save_table(self, rec, table):
+        try:
+            self.project.save_events(rec, table)
+        except (KeyError, ValueError, OSError) as exc:
+            QMessageBox.warning(self, "事件未保存", f"{rec.id}：{exc}")
+            return False
+        return True
 
     def _after_change(self):
         self.project.save()
@@ -269,8 +335,8 @@ class EventsPage(BasePage):
         df, spec, path = d.result_events, d.spec(), d.path
         self._last_table = (r.source, path, spec)
         self.project.pipeline.event_import = dict(spec, example_data=r.source, example_table=path)
-        self._store(r, df, f"从表格导入 {len(df)} 个事件", replace=d.replace.isChecked())
-        if d.apply_all.isChecked():
+        saved = self._store(r, df, f"从表格导入 {len(df)} 个事件", replace=d.replace.isChecked())
+        if saved and d.apply_all.isChecked():
             self._import_all(spec, r.source, path, d.replace.isChecked())
 
     def _import_all(self, spec, ex_data, ex_table, replace):
@@ -370,24 +436,26 @@ class EventsPage(BasePage):
         d.setWindowTitle("手动输入事件")
         d.resize(460, 380)
         lay = QVBoxLayout(d)
-        lay.addWidget(label("每行一个事件：时间（秒，从记录开头算）和事件名，例如“12.5 刺激”。"
-                            "也可以一行写多个时间，名字统一用下面的默认名。", "Sub", wrap=True))
+        lay.addWidget(label("从记录开头计时。可填秒、毫秒或分:秒，省略事件名时使用下方的默认名。", "Sub", wrap=True))
         txt = QPlainTextEdit()
-        txt.setPlaceholderText("12.5 刺激\n30 反应\n45.2, 刺激")
+        txt.setPlaceholderText("500ms 刺激\n01:02.5 反应\n12.5秒=10\n30、45、60")
         lay.addWidget(txt, 1)
         dn = line("事件", "")
         lay.addLayout(hbox(label("默认名", "Sub"), dn))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(d.accept)
+        def accept_events():
+            try:
+                d.events = ev.parse_manual(txt.toPlainText(), dn.text().strip() or "事件")
+            except ValueError as exc:
+                QMessageBox.warning(d, "事件时间", str(exc))
+                return
+            d.accept()
+
+        bb.accepted.connect(accept_events)
         bb.rejected.connect(d.reject)
         lay.addWidget(bb)
         if d.exec():
-            try:
-                df = ev.parse_manual(txt.toPlainText(), dn.text().strip() or "事件")
-            except ValueError as e:
-                QMessageBox.warning(self, "格式", str(e))
-                return
-            self._store(r, df, f"手动添加 {len(df)} 个事件")
+            self._store(r, d.events, f"手动添加 {len(d.events)} 个事件")
 
     def mark_on_wave(self):
         cur = self._need_rec()
@@ -397,35 +465,64 @@ class EventsPage(BasePage):
         p = self.project
 
         def work():
-            if r.status == pj.REC_DONE and r.clean_file and os.path.exists(p.path(r.clean_file)):
+            if pj.has_continuous_result(p, r):
                 import mne
                 raw = mne.io.read_raw_fif(p.path(r.clean_file), preload=True, verbose=False)
             else:
                 raw, _ = pj.open_raw(s, r, p.pipeline, log=log)
-            raw.set_annotations(ev.to_annotations(p.events(r, log=log)))
-            return raw
+            table = p.events(r, log=log)
+            opened = ev.editable_annotations(raw, table)
+            return raw, table, opened
 
-        def done(raw):
-            pre = r.status == pj.REC_DONE
+        def done(result):
+            raw, table, opened = result
+            pre = pj.has_continuous_result(p, r)
             try:
                 b = raw.plot(duration=20, n_channels=min(24, len(raw.ch_names)), block=False, show=True,
                              theme=theme.BROWSER, highpass=None if pre else 0.5, lowpass=None if pre else 40,
-                             title=f"{r.id}：按 A 进入标记模式，拖动添加事件；关闭窗口后保存")
+                             title=f"{r.id}：选择事件名，拖动标记；关闭窗口后保存")
             except Exception as e:  # noqa: BLE001
+                raw.close()
                 QMessageBox.warning(self, "波形浏览器", str(e))
                 return
 
             def closed():
-                df = ev.from_raw(raw)
-                p.save_events(r, df)
-                log(f"{r.id}：波形标记已保存，现在共 {len(df)} 个事件")
-                self._after_change()
-            self.ctx.keep_window(b, closed)
-            QMessageBox.information(self, "在波形上标记",
-                                    "在打开的波形窗口里：\n\n· 按 A 键进入标记模式\n· 在上方输入新事件名并添加\n"
-                                    "· 在波形上拖动，就会在那个位置加一个事件（拖出的宽度就是时长）\n"
-                                    "· 选中已有事件按 Delete 删除\n\n关闭波形窗口后自动保存。"
-                                    "坏段可以起名 BAD_xxx，分段时会跳过。")
+                try:
+                    edited = ev.wave_rows(raw)
+                    if edited == opened:
+                        return
+                    if self.ctx.runner.busy or self.project is not p:
+                        raise ValueError("请在打开这张波形的项目中、计算结束后修改事件。")
+                    df = ev.wave_edits(table, opened, edited)
+                    p.save_events(r, df, expected=table)
+                    message = f"{r.id}：波形标记已保存，共 {len(df)} 个事件。重新分段后用于分析。"
+                    log(message)
+                    self.ctx.statusBar().showMessage(message)
+                    self.on_show()
+                except (OSError, ValueError, KeyError) as exc:
+                    QMessageBox.warning(self, "波形事件未保存", str(exc))
+                    return False
+                finally:
+                    raw.close()
+            self.ctx.keep_window(b, closed, record_id=r.id)
+            if isinstance(b, QWidget) and hasattr(b, "_toggle_annotation_fig"):
+                if not b.mne.annotation_mode:
+                    b._toggle_annotation_fig()
+                dock = b.mne.fig_annotation
+                names = self._selected_kinds() if self._current() and self._current()[1] is r else []
+                names.extend(n for n in table.description.unique() if not ev.is_bad(n))
+                name = names[0] if names else "事件"
+                if dock.description_cmbx.findText(name) < 0:
+                    dock._add_description(name)
+                dock.description_cmbx.setCurrentText(name)
+                captions = {"Add Description":"新事件名", "Edit Description":"改名",
+                            "Remove Description":"删除类型", "Help":"帮助"}
+                for control in dock.findChildren(QPushButton):
+                    if control.text() in captions:
+                        control.setText(captions[control.text()])
+                dock.widget().layout().addWidget(btn("保存并关闭", b.close))
+            else:
+                self.ctx.statusBar().showMessage("在波形窗口按 A 进入标记模式，然后拖动添加事件。", 8000)
 
         self.run(f"载入 {r.id} 的波形", work, done)
 
@@ -436,10 +533,15 @@ class EventsPage(BasePage):
         s, r = cur
         if QMessageBox.question(self, "恢复", f"清除 {r.id} 现有的事件，恢复成数据文件自带的事件？") != QMessageBox.Yes:
             return
-        path = self.project.events_path(r)
-        if os.path.exists(path):
-            os.remove(path)
-        self.project.events(r, log=log)
+        try:
+            raw, _ = reading.read_raw_any(r.source, log=log)
+            try:
+                self.project.save_events(r, ev.from_raw(raw))
+            finally:
+                raw.close()
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "恢复事件失败", str(exc))
+            return
         self._after_change()
 
     # ------------------------------------------------------------ 整理
@@ -459,7 +561,9 @@ class EventsPage(BasePage):
         total = {}
         for _, r in targets:
             df, changed = ev.apply_rules(self.project.events(r, log=log), rules)
-            self.project.save_events(r, df)
+            if not self._save_table(r, df):
+                self.on_show()
+                return
             total.update(changed)
         log(f"改名：{len(total)} 种事件名被改动" + (f"（{len(targets)} 条记录）" if all_recs else ""))
         self._after_change()
@@ -474,7 +578,8 @@ class EventsPage(BasePage):
             QMessageBox.information(self, "平移", "先在“事件种类”表里选中要平移的事件。")
             return
         sec = self.shift_s.value()
-        self.project.save_events(r, ev.shift(self.project.events(r), which, sec))
+        if not self._save_table(r, ev.shift(self.project.events(r), which, sec)):
+            return
         log(f"{r.id}：{', '.join(which)} 平移 {sec:+g} 秒")
         self._after_change()
 
@@ -489,15 +594,41 @@ class EventsPage(BasePage):
             return
         if QMessageBox.question(self, "删除事件", f"删除 {r.id} 里的 {', '.join(which)}？") != QMessageBox.Yes:
             return
-        self.project.save_events(r, ev.drop(self.project.events(r), which))
-        self._after_change()
+        if self._save_table(r, ev.drop(self.project.events(r), which)):
+            self._after_change()
 
     # ------------------------------------------------------------ 分段
+    def epoch_record(self, *, source=None, interactive=True):
+        cur = self._need_rec()
+        if cur is None:
+            return
+        _, rec = cur
+        if not self.ctx.finish_mark_editors([rec.id]):
+            return
+        self._save_pipe()
+        project = self.project
+        source = source or self.epoch_input.currentData()
+        def work():
+            scope, subject, epochs = pj.epoch_record(project, rec, source=source, log=log)
+            result = _epoch_result(scope, subject, epochs)
+            result.title = f"{rec.id} · 分段完成"
+            result.params.update(记录=rec.id, 输入="原始记录" if source == "raw" else rec.clean_file)
+            return result
+        def done(result):
+            self.ctx.project_changed(f"{rec.id} 分段已保存，可直接运行分析")
+            self.ctx.add_report(result)
+            if self._current() and self._current()[1] is rec and result.figures:
+                title, fig = result.figures[0]
+                self._set_fig(fig, title)
+        return self.run(f"只分段 {rec.id}", work, done)
+
     def epoch_one(self):
         cur = self._need_rec()
         if cur is None:
             return
         s, _ = cur
+        if not self.ctx.finish_mark_editors([record.id for record in s.recordings]):
+            return
         self._save_pipe()
         p = self.project
 
@@ -510,11 +641,13 @@ class EventsPage(BasePage):
     def epoch_all(self):
         if not self.need_project(need_done=False):
             return
+        if not self.ctx.finish_mark_editors():
+            return
         self._save_pipe()
         p = self.project
-        todo = [s for s in p.subjects if any(r.status == pj.REC_DONE for r in s.recordings)]
+        todo = [s for s in p.subjects if any(pj.has_continuous_result(p, r) for r in s.recordings)]
         if not todo:
-            QMessageBox.information(self, "还不能分段", "还没有预处理好的记录。先到「预处理」处理。")
+            QMessageBox.information(self, "批量分段", "批量分段使用已有处理结果。选「只分段当前记录」可直接使用原始数据。")
             return
 
         def work():
@@ -606,12 +739,14 @@ class TableImportDialog(QDialog):
         self.skip = ispin(0, 0, 1000)
         self.tcol, self.lcol, self.dcol = combo([]), combo([]), combo([])
         self.unit = combo(ev.TIME_UNITS)
+        self.dur_unit = combo(["自动", "秒", "毫秒", "采样点"])
         self.offset = fspin(0, -1e5, 1e5, 0.01, 3, " s")
         f.addRow("跳过开头几行", self.skip)
         f.addRow("时间在哪一列", self.tcol)
         f.addRow("时间单位", self.unit)
         f.addRow("事件名在哪一列", self.lcol)
         f.addRow("时长在哪一列", self.dcol)
+        f.addRow("时长单位", self.dur_unit)
         f.addRow("整体平移", self.offset)
         lay.addLayout(f)
         self.info = label("", "Sub", wrap=True)
@@ -626,7 +761,7 @@ class TableImportDialog(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
         self._spec0 = spec0
-        for w in (self.tcol, self.lcol, self.dcol, self.unit):
+        for w in (self.tcol, self.lcol, self.dcol, self.unit, self.dur_unit):
             w.currentTextChanged.connect(self._update)
         self.offset.valueChanged.connect(self._update)
         self.skip.valueChanged.connect(self._read)
@@ -642,7 +777,11 @@ class TableImportDialog(QDialog):
 
     def _read(self):
         self.path = self.file.text().strip().strip('"')
+        self.result_events = ev.empty()
+        self.tab = None
+        self.preview.setRowCount(0)
         if not self.path or not os.path.exists(self.path):
+            self.info.setText("请选择存在的事件表格。")
             return
         try:
             self.tab = ev.read_table(self.path, self.skip.value())
@@ -671,6 +810,7 @@ class TableImportDialog(QDialog):
             cb.setCurrentText(cur)
             cb.blockSignals(False)
         self.unit.setCurrentText((sp or g)["unit"])
+        self.dur_unit.setCurrentText((sp or {}).get("dur_unit") or "自动")
         if sp:
             self.offset.setValue(float(sp.get("offset", 0)))
         self._update()
@@ -679,9 +819,11 @@ class TableImportDialog(QDialog):
         return dict(time_col=self.tcol.currentText(),
                     label_col="" if self.lcol.currentText() == NONE else self.lcol.currentText(),
                     dur_col="" if self.dcol.currentText() == NONE else self.dcol.currentText(),
-                    unit=self.unit.currentText(), offset=self.offset.value(), skip=self.skip.value())
+                    unit=self.unit.currentText(), dur_unit=self.dur_unit.currentText() if self.dur_unit.currentIndex() else "",
+                    offset=self.offset.value(), skip=self.skip.value())
 
     def _update(self):
+        self.dur_unit.setEnabled(self.dcol.currentText() != NONE)
         if self.tab is None or not self.tcol.currentText():
             return
         msgs = []

@@ -3,6 +3,7 @@
 这里的函数只做计算和出图，不碰界面；出图函数都返回 matplotlib Figure（或列表）。
 """
 import re
+import unicodedata
 
 import mne
 import numpy as np
@@ -26,11 +27,29 @@ def parse_floats(text, allow_empty=True):
         if allow_empty:
             return []
         raise ValueError("这里需要填数字")
-    return [float(x) for x in re.split(r"[,，\s]+", text) if x]
+    return [float(x) for x in parse_names(unicodedata.normalize("NFKC", text))]
 
 
 def parse_names(text):
-    return [x.strip() for x in re.split(r"[,，;；\s]+", text or "") if x.strip()]
+    return [x for x in re.split(r"[,，、;；\s]+", text or "") if x]
+
+
+def channel_tokens(text):
+    """Quoted channel names can contain spaces and delimiters; bare numbers retain their old index meaning."""
+    return [(m[1].replace('""', '"'), True) if m[1] is not None else (m[2], False)
+            for m in re.finditer(r'"((?:[^"]|"")*)"|([^,，、;；\s]+)', text or "")]
+
+
+def channel_names(text):
+    return [name for name, _ in channel_tokens(text)]
+
+
+def format_channels(names):
+    def quote(name):
+        if name.isdigit() or re.search(r'[,，、;；"\s]', name):
+            return '"' + name.replace('"', '""') + '"'
+        return name
+    return ", ".join(quote(n) for n in names)
 
 
 def parse_bands(text):
@@ -98,7 +117,7 @@ def apply_channel_setup(raw, montage_mode, montage_value, rename_from_locs, ch_t
         raw.set_eeg_reference("average", projection=False)
         log("已改为平均参考")
     elif reref_mode == "指定通道":
-        chs = parse_names(reref_channels)
+        chs = channel_names(reref_channels)
         if not chs:
             raise ValueError("请填写参考通道名")
         raw.set_eeg_reference(chs, projection=False)

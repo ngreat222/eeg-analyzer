@@ -207,14 +207,19 @@ class ProjectPage(BasePage):
         self.project_title.setText(p.name)
         self.project_title.setToolTip(p.folder)
         info = p.summary()
-        self.project_caption = f"{info['n']} 名被试 · {info['n_rec']} 条连续记录 · {info['done']} 名被试可分析"
+        single_epochs = sum(bool(rec.record_epochs_file) for subject, rec in p.recordings() if len(subject.recordings) > 1)
+        self.project_caption = f"{info['n']} 名被试 · {info['n_rec']} 条连续记录 · {info['done']} 名被试有分段"
+        if single_epochs:
+            self.project_caption += f" · {single_epochs} 条独立分段"
         self.stages.set_counts(info["n_rec"], info["rec_done"], info["done"])
-        if info["rec_done"] < info["n_rec"]:
+        if info["done"] or single_epochs:
+            self.next_page, action = "ERP", "打开 ERP 分析"
+        elif any(pj.has_continuous_result(p, rec) for _, rec in p.recordings()):
+            self.next_page, action = "事件", "查看事件与分段"
+        elif info["rec_done"] < info["n_rec"]:
             self.next_page, action = "预处理", "检查连续记录"
         elif info["done"] < info["n"] and info["n_rec"]:
             self.next_page, action = "事件", "查看事件与分段"
-        elif info["done"]:
-            self.next_page, action = "ERP", "打开 ERP 分析"
         else:
             self.next_page, action = "导入", "导入原始记录"
         self.next_step.setText("下一步　" + action + "　→")
@@ -238,11 +243,13 @@ class ProjectPage(BasePage):
                 vals = [s.name, "—", "导入的分段数据", "—", "—", seg, s.note]
                 state = None
             else:
+                if r.record_epochs_file and len(s.recordings) > 1:
+                    seg = "可单独分析" + (" · 被试分段也可用" if s.epochs_file else "")
                 epath = p.events_path(r)
                 n_ev = len(ev.load(epath)) if os.path.exists(epath) else None
                 vals = [s.name, r.condition or "—", r.status, "—" if n_ev is None else str(n_ev),
                         ", ".join(r.bads) or "—", seg, r.source]
-                state = r.status == pj.REC_DONE
+                state = pj.has_continuous_result(p, r)
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(os.path.basename(v) if j == 6 and r else v)
                 it.setToolTip(v)
@@ -263,7 +270,7 @@ class ProjectPage(BasePage):
                                              RAW_FILE_FILTER)
         if ps and self._ensure():
             added = pj.add_raw_files(self.project, ps)
-            self.ctx.project_changed(f"添加 {len(added)} 个原始数据，到「预处理」处理后即可分析")
+            self.ctx.project_changed(f"已添加 {len(added)} 条记录，可以单步处理或直接分段")
 
     def add_epochs(self):
         ps, _ = QFileDialog.getOpenFileNames(self, "选择分段数据", os.path.expanduser("~/Desktop"),
@@ -334,18 +341,29 @@ class ProjectPage(BasePage):
             return
         p = self.project
         new_s, new_c = subj.text().strip(), cond.text().strip()
+        target_name = pj._safe(new_s) if new_s else ""
+        if new_s and not target_name:
+            QMessageBox.warning(self, "被试名", "请填写可用于文件名的被试名。")
+            return
+        changed = set()
         for s, r in sel:
-            if new_c:
+            if new_c and new_c != r.condition:
                 r.condition = new_c
-            if new_s and new_s != s.name:
+                changed.add(s.name)
+            if target_name and target_name != s.name:
                 s.recordings.remove(r)
-                t = p.find(new_s)
+                t = p.find(target_name)
                 if t is None:
-                    t = pj.Subject(name=pj._safe(new_s))
+                    t = pj.Subject(name=target_name)
                     p.subjects.append(t)
                 t.recordings.append(r)
-                t.epochs_file, t.status = "", pj.STATUS_RAW
-            s.epochs_file, s.status = "", pj.STATUS_RAW     # 记录变了，需要重新分段
+                changed.update((s.name, t.name))
+        if not changed:
+            return
+        for name in changed:
+            subject = p.get(name)
+            subject.epochs_file, subject.status, subject.n_trials = "", pj.STATUS_RAW, {}
+            p._cache.pop(name, None)
         p.subjects = [s for s in p.subjects if s.recordings or s.epochs_file]
         self.ctx.project_changed(f"已修改 {len(sel)} 条记录，需要重新分段")
 
