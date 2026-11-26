@@ -141,6 +141,8 @@ class MainWindow(QMainWindow):
         self.statusBar().messageChanged.connect(lambda message: self.status.setVisible(not message))
         self.statusBar().addPermanentWidget(self.progress)
         self.statusBar().setSizeGripEnabled(False)
+        from .update_dialog import UpdateController
+        self.updates = UpdateController(self, self.update_button, schedule=settings is None)
         LOG.message.connect(self._append_log)
         self.runner.busy_changed.connect(self._busy)
         self.goto("项目")
@@ -258,9 +260,9 @@ class MainWindow(QMainWindow):
         tb.clicked.connect(self.toggle_theme)
         lay.addWidget(tb)
         self.workspace_buttons = (nb, ob, self.log_btn, tb)
-        ver = label(f"版本 {__version__}", "Caption")
-        ver.setContentsMargins(10, 6, 0, 0)
-        lay.addWidget(ver)
+        self.update_button = self._rail_btn(f"检查更新 · {__version__}", "mdi6.update")
+        self.update_button.setToolTip("查看版本和软件更新")
+        lay.addWidget(self.update_button)
         return rail
 
     @staticmethod
@@ -501,6 +503,7 @@ class MainWindow(QMainWindow):
                 w.close()
             except Exception:  # noqa: BLE001
                 pass
+        self.updates.shutdown()
         e.accept()
         if self.runner.busy:
             os._exit(0)
